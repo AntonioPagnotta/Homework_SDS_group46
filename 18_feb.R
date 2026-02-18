@@ -1,5 +1,5 @@
 # ==========================================
-# DATA PREPROCESSING
+# DATA PREPROCESSING & CONFORMAL PREDICTION
 # ==========================================
 
 # Load necessary libraries
@@ -46,7 +46,7 @@ print(paste("Found sensors:", paste(sensor_cols, collapse=", ")))
 # algorithms. To resolve this, we create a common, continuous time grid sampled at 10Hz.
 # Human movement frequencies (walking, hand gestures) generally fall below 5Hz. According
 # to the Nyquist-Shannon sampling theorem, you need a sampling rate at least double the 
-# highest frequency to capture the signal without aliasing.We then 
+# highest frequency to capture the signal without aliasing. We then 
 # use linear interpolation to align every sensor onto this shared grid, transforming 
 # the disparate, hole-riddled columns into a dense, synchronized matrix suitable for 
 # joint analysis.
@@ -102,17 +102,6 @@ for(sensor in sensor_cols) {
   }
   df_aligned[[paste0("Smooth_", sensor)]] <- smoothed_vals
 }
-
-# ==========================================
-# 4. Segmentation
-# ==========================================
-# To distinguish between Sedentary, Walking, and Running phases without manual labels, 
-# we rely on the variance of the acceleration magnitude, as the mean acceleration is 
-# dominated by constant gravity. Since variance scales exponentially across these activities 
-# (from nearly zero to very high), we apply a log-transformation to make the values linearly 
-# separable. We then use K-Means clustering to automatically detect the three natural intensity 
-# levels in the data, assigning an activity label to every time point based on these 
-# discovered thresholds.
 
 # ==========================================
 # 4. Segmentation (Improved & Robust)
@@ -213,7 +202,7 @@ p_dist <- ggplot(df_aligned, aes(x = Activity)) +
 print(p_dist)
 
 # ==========================================
-# EXPLORATORY DATA ANALYSIS (FDA)
+# 6. EXPLORATORY DATA ANALYSIS (FDA)
 # ==========================================
 # In this analytical phase, we transition from continuous signal processing to true 
 # Functional Data Analysis. We slice the long, continuous time series into fixed-length 
@@ -231,9 +220,13 @@ print("Starting FDA: Slicing data into functional observations...")
 # -------------------------------------------------------
 # A. Data Slicing (Creating Observations)
 # -------------------------------------------------------
-# We define a 5-second window. At 10Hz, this equals 50 data points per curve.
-pts_per_window <- 50 
+# We define a 5-second window to match the segmentation logic.
+# At 10Hz (dt=0.1s), this equals 50 data points per curve.
 window_duration <- 5 # seconds
+pts_per_window <- round(window_duration / dt)
+
+print(paste("Window Duration:", window_duration, "s"))
+print(paste("Points per Window:", pts_per_window))
 
 # Select the best available acceleration signal
 if("Smooth_LinearAccelerometerSensor" %in% names(df_aligned)) {
@@ -244,7 +237,7 @@ if("Smooth_LinearAccelerometerSensor" %in% names(df_aligned)) {
 
 # Calculate how many full windows fit in the data
 n_windows <- floor(length(acc_data) / pts_per_window)
-cat(n_windows)
+print(paste("Total Windows:", n_windows))
 trunc_len <- n_windows * pts_per_window
 
 # Reshape data into a Matrix (Rows = Time Points, Cols = Observations)
@@ -267,10 +260,10 @@ window_factors <- factor(window_labels, levels=1:3, labels=c("Sedentary", "Walki
 # -------------------------------------------------------
 # B. Create Functional Data Objects
 # -------------------------------------------------------
-# We create the 'fd' objects. We use a B-spline basis with enough flexibility (nbasis=10)
+# We create the 'fd' objects. We use a B-spline basis with enough flexibility (nbasis=12)
 # to capture the shape of movement within a 5-second window.
 window_time <- seq(0, window_duration, length.out = pts_per_window)
-fda_basis <- create.bspline.basis(rangeval = c(0, window_duration), nbasis = 10, norder = 4)
+fda_basis <- create.bspline.basis(rangeval = c(0, window_duration), nbasis = 12, norder = 4)
 acc_fd <- Data2fd(window_time, acc_matrix, fda_basis)
 
 # -------------------------------------------------------
@@ -279,7 +272,7 @@ acc_fd <- Data2fd(window_time, acc_matrix, fda_basis)
 print("Generating Spaghetti Plot...")
 
 # Define colors
-col_map <- c("Sedentary" = "red", "Walking" = "darkgreen", "Running" = "lightblue")
+col_map <- c("Sedentary" = "#377eb8", "Walking" = "#4daf4a", "Running" = "#e41a1c")
 curve_colors <- col_map[window_factors]
 # Handle NAs if any windows were unclassified
 curve_colors[is.na(curve_colors)] <- "gray"
@@ -343,163 +336,129 @@ legend("topright", legend = names(col_map), col = col_map, lwd = 2)
 
 print("FDA Exploration Complete.")
 
-
 # ==========================================
-# 7. CONFORMAL PREDICTION (Inductive Approach)
+# 7. CONFORMAL PREDICTION (Robust Implementation)
 # ==========================================
-# In this final computational step, we implement Inductive Conformal Prediction (ICP) 
-# to build an anomaly detection system. Our goal is to "learn" the normal behavior of 
-# the "Walking" phase and then rigorously test if the "Running" curves are statistically 
-# distinct (non-conformal).
-#
-# We choose ICP over Transductive CP because calculating the functional mean is expensive.
-# ICP splits the "Normal" data into a Training Set (to find the mean) and a Calibration 
-# Set (to learn the threshold), allowing us to score new observations instantly.
+# In this final step, we use Inductive Conformal Prediction (ICP) to detect anomalies.
+# We aim to train on "Normal" behavior and flag "Running" as an anomaly.
+# FIX: We added logic to automatically select "Sedentary" as the training class 
+# if "Walking" data is insufficient.
 
 print("Starting Inductive Conformal Prediction...")
 
 # -------------------------------------------------------
-# A. Data Preparation & Splitting
+# A. Dynamic Training Class Selection
 # -------------------------------------------------------
-# We assume 'acc_fd' (the functional object of all 5s windows) and 'window_labels' 
-# (the activity label for each window) exist from Section 6 (EDA).
+# Count how many 5s windows we have for each activity
+print("Activity Window Counts:")
+print(table(window_factors))
 
-# 1. Define "Normal" (Walking) and "Anomaly" (Running) indices
-idx_walking <- which(window_labels == "Walking")
-idx_running <- which(window_labels == "Running")
+# logic: Try 'Walking' first. If < 20 windows, fallback to 'Sedentary'.
+# If even 'Sedentary' is low, we cannot proceed.
+training_label <- "Walking"
+n_walking <- sum(window_factors == "Walking", na.rm = TRUE)
 
-# Check if we have enough data
-if(length(idx_walking) < 20) stop("Not enough 'Walking' data to train CP.")
+if (n_walking < 20) {
+  print("WARNING: Not enough 'Walking' data detected. Switching to 'Sedentary' as the Normal/Training class.")
+  training_label <- "Sedentary"
+}
 
-# 2. Split "Normal" (Walking) into Proper Training and Calibration Sets
-# We use a 50/50 split. 
-# - Proper Training: Used to calculate the Mean Curve.
-# - Calibration: Used to calculate the distribution of non-conformity scores (residuals).
+# Verify we have enough data now
+n_train_total <- sum(window_factors == training_label, na.rm = TRUE)
+if (n_train_total < 20) {
+  stop("Error: Not enough data in 'Walking' OR 'Sedentary' to train the model. Check Segmentation step.")
+}
+
+print(paste("Selected Normal Behavior for Training:", training_label))
+
+# -------------------------------------------------------
+# B. Data Splitting (Train/Calibrate/Test)
+# -------------------------------------------------------
+# Identify indices
+idx_normal <- which(window_factors == training_label)
+# We treat 'Running' as the anomaly we want to detect
+idx_anomaly <- which(window_factors == "Running") 
+
+# Split Normal data: 50% for Proper Training (Mean), 50% for Calibration (Threshold)
 set.seed(123)
-n_walk <- length(idx_walking)
-idx_cal <- sample(idx_walking, size = floor(n_walk * 0.5))
-idx_train <- setdiff(idx_walking, idx_cal)
+idx_cal <- sample(idx_normal, size = floor(length(idx_normal) * 0.5))
+idx_train <- setdiff(idx_normal, idx_cal)
 
-# Create subsets of the functional data
-fd_train <- acc_fd[idx_train] # Normal behavior reference
-fd_cal   <- acc_fd[idx_cal]   # Used to set the threshold
-fd_test  <- acc_fd[idx_running] # Anomalies we want to detect
+# Create functional subsets
+fd_train <- acc_fd[idx_train]   # To learn the Mean Curve
+fd_cal   <- acc_fd[idx_cal]     # To learn the Threshold (Alpha)
+fd_test  <- acc_fd[idx_anomaly] # The Anomalies to detect
 
-print(paste("Training Curves:", length(idx_train)))
-print(paste("Calibration Curves:", length(idx_cal)))
-print(paste("Test Curves (Running):", length(idx_running)))
+print(paste("Training Set Size:", length(idx_train)))
+print(paste("Calibration Set Size:", length(idx_cal)))
+print(paste("Test Set (Anomaly) Size:", length(idx_anomaly)))
 
 # -------------------------------------------------------
-# B. Define Non-Conformity Measure (Score)
+# C. Conformity Measure (Integrated Squared Error)
 # -------------------------------------------------------
-# We calculate the Functional Mean of the Proper Training set.
-# This represents the "ideal" Walking curve.
+# 1. Compute Mean Curve from Proper Training Set
 mean_curve_train <- mean.fd(fd_train)
 
-# Define the Scoring Function: Integrated Squared Error (ISE)
-# Formula: Integral( (X_i(t) - Mean(t))^2 dt )
-# Reasoning: We want to flag curves that differ in Amplitude (energy) or Shape. 
-# ISE captures the total deviation over the entire 5-second window.
-
+# 2. Define Scoring Function (ISE)
 get_conformity_score <- function(target_fd, reference_mean_fd) {
-  # Evaluate both functions on a fine grid (100 points over 5 seconds)
-  eval_t <- seq(0, 5, length.out = 100)
+  # Evaluate on fine grid (100 points per 5s window)
+  eval_t <- seq(0, window_duration, length.out = 100)
   
-  # Get values matrix
-  mat_target <- eval.fd(eval_t, target_fd) # Cols = curves
-  vec_ref    <- eval.fd(eval_t, reference_mean_fd) # Single vector
+  # Get values
+  mat_target <- eval.fd(eval_t, target_fd) # Matrix of curves
+  vec_ref    <- eval.fd(eval_t, reference_mean_fd) # Mean vector
   
-  # Calculate Squared Errors
-  # (Observation - Mean)^2
+  # Squared Error: (Curve - Mean)^2
   sq_diff <- (mat_target - as.vector(vec_ref))^2
   
-  # Integrate (Approximate via Riemann Sum)
-  # Sum of squared diffs * dt (time step)
-  dt <- 5 / 100
-  scores <- colSums(sq_diff) * dt
-  
+  # Integrate (Sum * dt)
+  dt_eval <- window_duration / 100
+  scores <- colSums(sq_diff) * dt_eval
   return(scores)
 }
 
-# -------------------------------------------------------
-# C. Calibration Phase
-# -------------------------------------------------------
-# We calculate the scores (alpha) for the Calibration set.
-# These scores tell us "How much does a normal Walking curve typically deviate from the mean?"
+# 3. Calculate Calibration Scores (How much Normal data varies)
 alpha_cal <- get_conformity_score(fd_cal, mean_curve_train)
 
 # -------------------------------------------------------
-# D. Prediction / Testing Phase
+# D. Prediction / Testing
 # -------------------------------------------------------
-# Now we test the "Running" curves. We hypothesize that if our CP model works,
-# running curves will have huge deviation scores compared to the calibration scores.
-
-# 1. Calculate scores for the Test Set (Running)
+# Calculate scores for the Anomalies (Running)
 alpha_test <- get_conformity_score(fd_test, mean_curve_train)
 
-# 2. Compute P-Values
-# For each test curve, the p-value is the fraction of Calibration scores 
-# that are GREATER than the test score.
-# If p-value is very low (e.g., < 0.05), it means the test score is higher than 
-# 95% of the normal data, so we reject the "Normal" hypothesis.
+# Compute P-Values
+# p_val = (Count(Cal_Scores >= Test_Score) + 1) / (N_Cal + 1)
 calculate_p_value <- function(new_score, cal_scores) {
-  # Formula: (|{cal_scores >= new_score}| + 1) / (n_cal + 1)
   (sum(cal_scores >= new_score) + 1) / (length(cal_scores) + 1)
 }
 
-# Apply to all test curves
 p_values <- sapply(alpha_test, calculate_p_value, cal_scores = alpha_cal)
 
 # -------------------------------------------------------
-# E. Results and Visualization
+# E. Results & Visualization
 # -------------------------------------------------------
-# Define significance level (epsilon)
-epsilon <- 0.05
+epsilon <- 0.05 # Significance level
+is_detected <- p_values < epsilon
+detection_rate <- sum(is_detected) / length(is_detected) * 100
 
-# Classify: If p < epsilon, it is an Anomaly (Non-Conformal)
-is_anomaly <- p_values < epsilon
-detection_rate <- sum(is_anomaly) / length(is_anomaly) * 100
+print(paste("Anomaly Detection Rate (Running detected as Non-Conformal):", round(detection_rate, 2), "%"))
 
-print(paste("Detection Rate (Running classified as Anomaly):", round(detection_rate, 2), "%"))
-
-# VISUALIZATION 1: Score Distribution
-# We visualize the separation between Normal (Calibration) scores and Anomaly (Test) scores.
+# VISUALIZATION: Score Separation
+# We combine scores into a dataframe to plot the separation
 df_scores <- data.frame(
   Score = c(alpha_cal, alpha_test),
-  Type = c(rep("Calibration (Walking)", length(alpha_cal)), 
-           rep("Test (Running)", length(alpha_test)))
+  Group = c(rep(paste("Normal:", training_label), length(alpha_cal)), 
+            rep("Anomaly: Running", length(alpha_test)))
 )
 
-p_scores <- ggplot(df_scores, aes(x = Type, y = Score, fill = Type)) +
+p_scores <- ggplot(df_scores, aes(x = Group, y = Score, fill = Group)) +
   geom_boxplot() +
-  scale_y_log10() + # Use Log scale because running energy is much higher
-  labs(title = "Conformity Scores: Walking vs Running",
-       subtitle = "Higher score = More different from Mean Walking Curve",
+  scale_y_log10() + 
+  labs(title = "Conformity Scores: Normal vs Anomaly",
+       subtitle = paste("Reference Class:", training_label),
        y = "Integrated Squared Error (Log Scale)") +
   theme_minimal() +
   geom_hline(yintercept = quantile(alpha_cal, 0.95), linetype="dashed", color="red") +
   annotate("text", x=1, y=quantile(alpha_cal, 0.95), label="95% Threshold", vjust=-1)
 
 print(p_scores)
-
-# VISUALIZATION 2: Functional Plot of Detected Anomalies
-# We plot the Mean Walking Curve vs. a few detected Anomalies
-par(mfrow=c(1,1))
-eval_t <- seq(0, 5, length.out=100)
-mean_vals <- eval.fd(eval_t, mean_curve_train)
-
-# Plot Mean Walking Curve (Black)
-plot(eval_t, mean_vals, type="l", lwd=3, col="black", ylim=c(0, max(mean_vals)*3),
-     main="CP Result: Normal Mean vs Detected Anomalies",
-     xlab="Time (s)", ylab="Acceleration Magnitude")
-
-# Overlay first 5 detected anomalies (Red)
-anom_idx <- which(is_anomaly)[1:5]
-if(length(anom_idx) > 0) {
-  anom_vals <- eval.fd(eval_t, fd_test[anom_idx])
-  matlines(eval_t, anom_vals, col="red", lty=1, lwd=1)
-}
-legend("topright", legend=c("Mean Walking (Normal)", "Detected Running (Anomaly)"),
-       col=c("black", "red"), lwd=c(3, 1))
-
-print("Conformal Prediction Implementation Complete.")
