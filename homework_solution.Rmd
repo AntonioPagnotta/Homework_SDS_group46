@@ -1,0 +1,219 @@
+---
+title: "Homework GROUP 46"
+author: "Antonio Pagnotta, Beatrice Mazzocchi, Domenico Mangieri"
+date: "2026-02-14"
+output: 
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+# Required libraries
+# Define required packages
+packages <- c("fda", "zoo")
+
+# Install missing packages
+installed_packages <- packages %in% rownames(installed.packages())
+if (any(installed_packages == FALSE)) {
+  install.packages(packages[!installed_packages], repos = "https://cloud.r-project.org")
+}
+
+# Load libraries
+library(fda)
+library(zoo)
+library(fda)
+library(zoo)     # For interpolation
+library(ggplot2)
+library(MASS)    # For generic math functions
+```
+
+
+## 1. Experiment Overview
+The objective of this study is to analyze **human kinematic behavior** captured via mobile sensing. By collecting multivariate functional data, we aim to categorize and study distinct activity phases using **Functional Data Analysis (FDA)** techniques.
+
+---
+
+## 2. Protocol and Instrumentation
+To ensure data fidelity and reproducibility, the following setup was employed:
+
+* **Device:** Smartphone.
+* **Application:** Arduino Science Journal.
+* **Primary Sensor:** Linear Accelerometer.
+    * *Rationale:* This sensor measures acceleration excluding gravity, making it the optimal choice for pure motion quantification.
+
+---
+
+## 3. Experimental Timeline
+Data was captured in a **single continuous sequential session**. This approach provides a holistic view of transition states between three distinct phases:
+
+| Phase | Activity Type | Signal Characteristics |
+| :--- | :--- | :--- |
+| **Running** | High Intensity | High variance and large amplitude. |
+| **Sedentary** | Rest/Baseline | Minimal variance; representative of the noise floor. |
+| **Walking** | Moderate (Grocery Shopping) | Intermediate variance and rhythmic patterns. |
+
+---
+
+## 4. Data Structure & FDA Transformation
+The raw output is an asynchronous time-series log. To transition from standard time-series analysis to **Functional Data Analysis**, we apply a windowing transformation:
+
+1.  **Segmentation:** The continuous stream is divided into short, fixed-duration "epochs."
+2.  **Functional Mapping:** Each window is treated as a single functional observation $X_i(t)$.
+3.  **Domain:** $t \in [0, T]$, where $T$ is the duration of the epoch.
+
+
+> **Note:** This transformation allows us to analyze the *shape* and *dynamics* of the motion rather than just individual, discrete data points.
+
+2. Data Handling and Preprocessing
+Here we import the raw CSV, handle missing values caused by asynchronous sensor sampling, and segment the continuous stream into function curves.
+
+```{r preprocessing, include=TRUE}
+# 1. Load Data
+# NOTE: Ensure the file is in your working directory
+raw_data <- read.csv("dati_sgravati (1).csv")
+
+# 2. Selection and Cleaning
+# We focus on LinearAccelerometerSensor. 
+# If unavailable, we could calculate Magnitude from AccX, AccY, AccZ.
+df <- raw_data[, c("timestamp", "LinearAccelerometerSensor")]
+
+# Sort by timestamp
+df <- df[order(df$timestamp), ]
+
+# Handle Missing Values (Interpolation)
+# The sensor is asynchronous; we interpolate to fill NaNs.
+df$LinearAccelerometerSensor <- na.approx(df$LinearAccelerometerSensor, rule = 2)
+
+# 3. Segmentation (Creating Functions)
+# We slice the continuous signal into 2-second windows to create our sample of curves.
+# Assuming ~20ms sampling rate (50Hz), 2 seconds is approx 100 points.
+window_size <- 100 
+n_points <- nrow(df)
+n_curves <- floor(n_points / window_size)
+
+# Create a Matrix of Data (Rows = Curves, Cols = Time Points)
+data_mat <- matrix(NA, nrow = n_curves, ncol = window_size)
+
+for(i in 1:n_curves){
+  idx_start <- (i-1)*window_size + 1
+  idx_end <- i*window_size
+  data_mat[i, ] <- df$LinearAccelerometerSensor[idx_start:idx_end]
+}
+
+# Create time grid for a single curve (normalized 0 to 1)
+time_grid <- seq(0, 1, length.out = window_size)
+
+cat("Data Segmentation Complete:\n")
+cat("Number of Functional Observations (N):", n_curves, "\n")
+cat("Time points per curve (P):", window_size, "\n")
+```
+
+3. Functional Data Analysis (FDA)
+We represent the discrete data points as smooth functions using B-splines and perform Functional Principal Component Analysis (FPCA) to reduce dimensionality.
+
+```{r fda, include=TRUE}
+# 1. Create Functional Objects
+# We use a B-spline basis. 
+# nbasis = 15 gives enough flexibility for accelerometer data without overfitting.
+basis <- create.bspline.basis(rangeval = c(0, 1), nbasis = 15, norder = 4)
+fd_obj <- smooth.basis(time_grid, t(data_mat), basis)$fd
+
+# 2. Functional PCA
+# We project the curves onto the principal components (Eigenfunctions).
+# This corresponds to the "Projection" approach in Section 3 of the paper.
+pca_res <- pca.fd(fd_obj, nharm = 4)
+
+# Extract Scores (The coefficients \xi in the paper)
+scores <- pca_res$scores
+eigen_functions <- pca_res$harmonics
+
+# Visualize the Mean Function and First Eigenfunction
+par(mfrow=c(1,2))
+plot(pca_res$meanfd, main = "Mean Function")
+plot(eigen_functions[1], main = "1st Eigenfunction (Main Mode of Variation)")
+```
+
+4. Conformal Prediction ImplementationWe implement the Inductive Conformal Prediction method (Section 3 of the main paper) using the Gaussian Approximation (Section 3.1) for the conformity scores.The Logic:Split Data: Divide curves into Training ($D_{train}$) and Calibration ($D_{cal}$) sets.Estimate Density: Assume the PC scores follow a Gaussian distribution (Ellipsoid in k-dimensions). We calculate the Mean ($\mu$) and Covariance ($\Sigma$) on $D_{train}$.Conformity Score: Calculate the Mahalanobis distance of the calibration points from the center. This measures how "normal" a curve is.Calibration: Find the $(1-\alpha)$ quantile of these distances ($r^2$). This defines the boundary of an ellipsoid containing 90% of the data.Band Construction: Project this ellipsoid back to function space. The band width at time $t$ is proportional to the standard deviation of the process at time $t$.
+
+```{r conformal_pred, include=TRUE}
+# Parameters
+alpha <- 0.1  # 90% Confidence
+set.seed(123)
+
+# 1. Split Data
+n <- nrow(scores)
+train_idx <- sample(1:n, size = floor(n/2))
+calib_idx <- setdiff(1:n, train_idx)
+
+scores_train <- scores[train_idx, ]
+scores_calib <- scores[calib_idx, ]
+
+# 2. Fit Gaussian (Mean and Covariance on Training)
+mu_vec <- colMeans(scores_train)
+sigma_mat <- cov(scores_train)
+
+# 3. Compute Conformity Scores (Mahalanobis Distance) on Calibration Set
+# The score measures how far a curve is from the center of the distribution
+calib_dists <- mahalanobis(scores_calib, center = mu_vec, cov = sigma_mat)
+
+# 4. Compute Quantile (The Radius of the Ellipsoid)
+# We find k such that 90% of calibration distances are <= k
+k_quantile <- quantile(calib_dists, probs = (1 - alpha) * (1 + 1/length(calib_dists)))
+
+cat("Conformal Threshold (Mahalanobis Distance):", k_quantile, "\n")
+
+# 5. Construct Prediction Bands
+# The formula for the max/min of the function subject to the ellipsoid constraint:
+# Band(t) = Mean(t) +/- sqrt( k * diag( Phi(t) * Sigma * Phi(t)^T ) )
+# Where Phi(t) is the vector of basis functions (or eigenfunctions) at time t.
+
+# Evaluate Eigenfunctions on a dense grid for plotting
+plot_grid <- seq(0, 1, length.out = 100)
+phi_eval <- eval.fd(plot_grid, eigen_functions) # Matrix: 100 x nharm
+
+# Calculate Variance factor at each time point: diag( Phi * Sigma * Phi' )
+var_t <- diag(phi_eval %*% sigma_mat %*% t(phi_eval))
+
+# Mean function evaluated
+mean_eval <- eval.fd(plot_grid, pca_res$meanfd)
+
+# Calculate Upper and Lower bounds
+width_t <- sqrt(k_quantile * var_t)
+lower_bound <- mean_eval - width_t
+upper_bound <- mean_eval + width_t
+```
+
+5. Results and Discussion
+We visualize the resulting simultaneous prediction band. The grey area represents the region where a new activity curve is guaranteed to fall with 90% probability, assuming the data comes from the same distribution (exchangeability).
+
+```{r results, include=TRUE}
+# Prepare data for plotting
+plot_df <- data.frame(
+  Time = plot_grid,
+  Mean = as.vector(mean_eval),
+  Lower = as.vector(lower_bound),
+  Upper = as.vector(upper_bound)
+)
+
+# Plot
+p <- ggplot(plot_df, aes(x = Time)) +
+  # Add the Prediction Band
+  geom_ribbon(aes(ymin = Lower, ymax = Upper), fill = "red", alpha = 0.2) +
+  geom_line(aes(y = Mean), color = "red", size = 1.2) +
+  
+  # Overlay a few random calibration curves to check coverage
+  geom_line(data = data.frame(Time = plot_grid, 
+                              Value = eval.fd(plot_grid, fd_obj[calib_idx[1]])),
+            aes(y = Value), color = "black", alpha = 0.3, linetype="dashed") +
+  geom_line(data = data.frame(Time = plot_grid, 
+                              Value = eval.fd(plot_grid, fd_obj[calib_idx[10]])),
+            aes(y = Value), color = "black", alpha = 0.3, linetype="dashed") +
+  
+  labs(title = "90% Conformal Prediction Band (Inductive FPCA)",
+       subtitle = "Red Shaded: Prediction Band | Black Dashed: Sample Real Curves",
+       y = "Linear Acceleration", x = "Normalized Time (Window)") +
+  theme_minimal()
+
+print(p)
