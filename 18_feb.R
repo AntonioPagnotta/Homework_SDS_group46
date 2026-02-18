@@ -335,130 +335,406 @@ plot(acc_deriv_fd, col = curve_colors, lwd = 0.5,
 legend("topright", legend = names(col_map), col = col_map, lwd = 2)
 
 print("FDA Exploration Complete.")
+# ==========================================
+# DATA PREPROCESSING & CONFORMAL PREDICTION (FINAL CORRECTED)
+# ==========================================
+
+# Load necessary libraries
+if(!require(dplyr)) install.packages("dplyr")
+if(!require(zoo)) install.packages("zoo")
+if(!require(fda)) install.packages("fda")
+if(!require(ggplot2)) install.packages("ggplot2")
+if(!require(reshape2)) install.packages("reshape2")
+if(!require(ks)) install.packages("ks") # Required for Density CP
+
+library(dplyr)
+library(zoo)
+library(fda)
+library(ggplot2)
+library(reshape2)
+library(ks)
 
 # ==========================================
-# 7. CONFORMAL PREDICTION (Robust Implementation)
+# 1. Load and Inspect
 # ==========================================
-# In this final step, we use Inductive Conformal Prediction (ICP) to detect anomalies.
-# We aim to train on "Normal" behavior and flag "Running" as an anomaly.
-# FIX: We added logic to automatically select "Sedentary" as the training class 
-# if "Walking" data is insufficient.
+print("Loading data...")
+df <- read.csv("dati_sgravati (1).csv")
+
+# Sort and convert time
+df <- df[order(df$timestamp), ]
+start_time <- min(df$timestamp)
+df$time_sec <- (df$timestamp - start_time) / 1000
+
+# Identify sensors
+sensor_cols <- setdiff(names(df), c("timestamp", "time_sec"))
+print(paste("Found sensors:", paste(sensor_cols, collapse=", ")))
+
+# ==========================================
+# 2. Handle Sparsity (Interpolation)
+# ==========================================
+print("Aligning and Interpolating...")
+dt <- 0.1 
+t_grid <- seq(from = 0, to = max(df$time_sec), by = dt)
+df_aligned <- data.frame(time = t_grid)
+
+interpolate_sensor <- function(time_col, val_col, new_grid) {
+  valid_idx <- !is.na(val_col)
+  if(sum(valid_idx) < 2) return(rep(0, length(new_grid)))
+  z <- zoo(val_col[valid_idx], time_col[valid_idx])
+  as.numeric(na.approx(z, xout = new_grid, rule = 2))
+}
+
+for(sensor in sensor_cols) {
+  df_aligned[[sensor]] <- interpolate_sensor(df$time_sec, df[[sensor]], t_grid)
+}
+
+# ==========================================
+# 3. Memory-Safe Smoothing (Chunked)
+# ==========================================
+print("Smoothing in chunks...")
+chunk_size <- 2000 
+n_points <- length(t_grid)
+num_chunks <- ceiling(n_points / chunk_size)
+
+smooth_chunk <- function(time_vec, data_vec) {
+  nbasis <- max(4, round(length(time_vec) / 4))
+  basis_obj <- create.bspline.basis(rangeval = range(time_vec), nbasis = nbasis, norder = 4)
+  fdPar_obj <- fdPar(basis_obj, Lfdobj = 2, lambda = 0.01)
+  smooth_res <- smooth.basis(time_vec, data_vec, fdPar_obj)
+  return(eval.fd(time_vec, smooth_res$fd))
+}
+
+for(sensor in sensor_cols) {
+  # print(paste("Processing sensor:", sensor)) # Commented to reduce spam
+  smoothed_vals <- numeric(n_points)
+  for(i in 1:num_chunks) {
+    idx_start <- (i-1) * chunk_size + 1
+    idx_end <- min(i * chunk_size, n_points)
+    idx <- idx_start:idx_end
+    smoothed_vals[idx] <- smooth_chunk(df_aligned$time[idx], df_aligned[[sensor]][idx])
+  }
+  df_aligned[[paste0("Smooth_", sensor)]] <- smoothed_vals
+}
+
+# ==========================================
+# 4. Segmentation (Robust 5s Window)
+# ==========================================
+print("Segmenting Activity Phases...")
+
+# A. Calculate Magnitude
+if("Smooth_LinearAccelerometerSensor" %in% names(df_aligned) && 
+   sum(abs(df_aligned$Smooth_LinearAccelerometerSensor)) > 10) {
+  mag <- abs(df_aligned$Smooth_LinearAccelerometerSensor)
+} else {
+  mag <- sqrt(df_aligned$Smooth_AccX^2 + df_aligned$Smooth_AccY^2 + df_aligned$Smooth_AccZ^2)
+}
+
+# B. Rolling Variance (5s Window)
+window_size <- round(5 / dt) 
+roll_var <- rollapply(mag, width = window_size, FUN = var, fill = NA, align = "right")
+roll_var[is.na(roll_var)] <- 0
+df_aligned$RollVar <- roll_var
+
+# C. Clustering
+set.seed(123)
+log_var <- log(roll_var + 1e-6) 
+kmeans_res <- kmeans(log_var, centers = 3, nstart = 50)
+centers_sorted <- sort(kmeans_res$centers)
+
+# D. Thresholding (Reverted to Standard Mean for Robustness)
+# Using simple midpoints prevents "Running" from being missed if the threshold is too high
+thresh1 <- exp(mean(centers_sorted[1:2])) 
+thresh2 <- exp(mean(centers_sorted[2:3])) 
+
+df_aligned$Activity <- cut(df_aligned$RollVar, 
+                           breaks = c(-Inf, thresh1, thresh2, Inf),
+                           labels = c("Sedentary", "Walking", "Running"))
+
+# E. Label Smoothing
+smooth_window <- round(1.0 / dt) 
+if(smooth_window %% 2 == 0) smooth_window <- smooth_window + 1
+act_int <- as.integer(df_aligned$Activity)
+act_smooth <- runmed(act_int, k = smooth_window)
+df_aligned$Activity <- factor(act_smooth, levels=1:3, labels=c("Sedentary", "Walking", "Running"))
+
+print("Activity Distribution:")
+print(table(df_aligned$Activity))
+
+# ==========================================
+# 5. Visualization
+# ==========================================
+print("Generating Sensor Plots...")
+smooth_cols <- grep("Smooth_", names(df_aligned), value = TRUE)
+
+for(sensor_col in smooth_cols) {
+  if(max(abs(df_aligned[[sensor_col]]), na.rm=TRUE) == 0) next
+  
+  p <- ggplot(df_aligned, aes_string(x = "time", y = sensor_col, color = "Activity", group = 1)) +
+    geom_line(linewidth = 0.5) +
+    labs(title = paste("Smoothed:", sensor_col), y = "Value", x = "Time (s)") +
+    theme_minimal() +
+    scale_color_manual(values = c("Sedentary" = "#377eb8", "Walking" = "#4daf4a", "Running" = "#e41a1c")) +
+    guides(color = guide_legend(override.aes = list(linewidth = 3))) +
+    theme(legend.position = "top")
+  print(p)
+}
+
+# ==========================================
+# 6. EXPLORATORY DATA ANALYSIS (FDA)
+# ==========================================
+print("Starting FDA Slicing...")
+
+# A. Data Slicing (5s Windows)
+window_duration <- 5 
+pts_per_window <- round(window_duration / dt)
+
+# Use Acc Magnitude for FDA
+if("Smooth_LinearAccelerometerSensor" %in% names(df_aligned)) {
+  acc_data <- abs(df_aligned$Smooth_LinearAccelerometerSensor)
+} else {
+  acc_data <- sqrt(df_aligned$Smooth_AccX^2 + df_aligned$Smooth_AccY^2 + df_aligned$Smooth_AccZ^2)
+}
+
+n_windows <- floor(length(acc_data) / pts_per_window)
+trunc_len <- n_windows * pts_per_window
+acc_matrix <- matrix(acc_data[1:trunc_len], nrow = pts_per_window, ncol = n_windows)
+
+# Get Window Labels
+activity_vec <- as.integer(df_aligned$Activity[1:trunc_len])
+activity_matrix <- matrix(activity_vec, nrow = pts_per_window, ncol = n_windows)
+get_mode <- function(v) {
+  uniqv <- unique(na.omit(v))
+  if(length(uniqv)==0) return(NA)
+  uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+window_labels <- apply(activity_matrix, 2, get_mode)
+window_factors <- factor(window_labels, levels=1:3, labels=c("Sedentary", "Walking", "Running"))
+
+# B. Create FD Objects
+window_time <- seq(0, window_duration, length.out = pts_per_window)
+fda_basis <- create.bspline.basis(rangeval = c(0, window_duration), nbasis = 12, norder = 4)
+acc_fd <- Data2fd(window_time, acc_matrix, fda_basis)
+
+# C. Plotting
+col_map <- c("Sedentary" = "#377eb8", "Walking" = "#4daf4a", "Running" = "#e41a1c")
+curve_colors <- col_map[window_factors]
+curve_colors[is.na(curve_colors)] <- "gray"
+
+plot(acc_fd, col = curve_colors, lty = 1, lwd = 0.5,
+     main = "Spaghetti Plot (5s Windows)", xlab = "Time (s)", ylab = "Acc (m/s^2)")
+legend("topright", legend = names(col_map), col = col_map, lwd = 2)
+
+# ==========================================
+# 7. CONFORMAL PREDICTION (Full Approach 1: FPCA + KDE)
+# ==========================================
+# FIX: Added 'project_fd_to_pca' function to solve the "function not found" error.
+# This manually calculates scores for new data.
 
 print("Starting Inductive Conformal Prediction...")
 
-# -------------------------------------------------------
 # A. Dynamic Training Class Selection
-# -------------------------------------------------------
-# Count how many 5s windows we have for each activity
-print("Activity Window Counts:")
-print(table(window_factors))
-
-# logic: Try 'Walking' first. If < 20 windows, fallback to 'Sedentary'.
-# If even 'Sedentary' is low, we cannot proceed.
 training_label <- "Walking"
-n_walking <- sum(window_factors == "Walking", na.rm = TRUE)
-
-if (n_walking < 20) {
-  print("WARNING: Not enough 'Walking' data detected. Switching to 'Sedentary' as the Normal/Training class.")
+if (sum(window_factors == "Walking", na.rm=TRUE) < 20) {
   training_label <- "Sedentary"
+  print("Switching to Sedentary for training.")
 }
+if (sum(window_factors == training_label, na.rm=TRUE) < 20) stop("Not enough data to train.")
 
-# Verify we have enough data now
-n_train_total <- sum(window_factors == training_label, na.rm = TRUE)
-if (n_train_total < 20) {
-  stop("Error: Not enough data in 'Walking' OR 'Sedentary' to train the model. Check Segmentation step.")
-}
-
-print(paste("Selected Normal Behavior for Training:", training_label))
-
-# -------------------------------------------------------
-# B. Data Splitting (Train/Calibrate/Test)
-# -------------------------------------------------------
-# Identify indices
+# Indices
 idx_normal <- which(window_factors == training_label)
-# We treat 'Running' as the anomaly we want to detect
 idx_anomaly <- which(window_factors == "Running") 
 
-# Split Normal data: 50% for Proper Training (Mean), 50% for Calibration (Threshold)
 set.seed(123)
 idx_cal <- sample(idx_normal, size = floor(length(idx_normal) * 0.5))
 idx_train <- setdiff(idx_normal, idx_cal)
 
-# Create functional subsets
-fd_train <- acc_fd[idx_train]   # To learn the Mean Curve
-fd_cal   <- acc_fd[idx_cal]     # To learn the Threshold (Alpha)
-fd_test  <- acc_fd[idx_anomaly] # The Anomalies to detect
+fd_train <- acc_fd[idx_train]   
+fd_cal   <- acc_fd[idx_cal]     
+fd_test  <- acc_fd[idx_anomaly] 
 
-print(paste("Training Set Size:", length(idx_train)))
-print(paste("Calibration Set Size:", length(idx_cal)))
-print(paste("Test Set (Anomaly) Size:", length(idx_anomaly)))
+print(paste("Training Set:", length(idx_train)))
+print(paste("Calibration Set:", length(idx_cal)))
+print(paste("Test Set (Running):", length(idx_anomaly)))
 
-# -------------------------------------------------------
-# C. Conformity Measure (Integrated Squared Error)
-# -------------------------------------------------------
-# 1. Compute Mean Curve from Proper Training Set
-mean_curve_train <- mean.fd(fd_train)
+# B. Functional PCA
+nharm <- 2 
+pca_model <- pca.fd(fd_train, nharm = nharm)
+var_prop <- sum(pca_model$varprop) * 100
+print(paste("FPCA Variance Explained:", round(var_prop, 2), "%"))
 
-# 2. Define Scoring Function (ISE)
-get_conformity_score <- function(target_fd, reference_mean_fd) {
-  # Evaluate on fine grid (100 points per 5s window)
-  eval_t <- seq(0, window_duration, length.out = 100)
+# Function to manually project new curves onto the PCA basis
+project_fd_to_pca <- function(new_fd, pca_obj) {
+  # 1. Evaluate curves and mean on a fine grid
+  t_eval <- seq(0, 5, length.out=100)
+  mat_new <- eval.fd(t_eval, new_fd)
+  vec_mean <- eval.fd(t_eval, pca_obj$meanfd)
   
-  # Get values
-  mat_target <- eval.fd(eval_t, target_fd) # Matrix of curves
-  vec_ref    <- eval.fd(eval_t, reference_mean_fd) # Mean vector
+  # 2. Center the data (Subtract Training Mean)
+  mat_centered <- sweep(mat_new, 1, vec_mean, "-") 
   
-  # Squared Error: (Curve - Mean)^2
-  sq_diff <- (mat_target - as.vector(vec_ref))^2
+  # 3. Create FD object for centered data
+  fd_centered <- Data2fd(t_eval, mat_centered, pca_obj$harmonics$basis)
   
-  # Integrate (Sum * dt)
-  dt_eval <- window_duration / 100
-  scores <- colSums(sq_diff) * dt_eval
-  return(scores)
+  # 4. Inner product with Harmonics -> Scores
+  return(inprod(fd_centered, pca_obj$harmonics))
 }
 
-# 3. Calculate Calibration Scores (How much Normal data varies)
-alpha_cal <- get_conformity_score(fd_cal, mean_curve_train)
+# Get Scores
+scores_train <- pca_model$scores
+scores_cal   <- project_fd_to_pca(fd_cal, pca_model)
+scores_test  <- project_fd_to_pca(fd_test, pca_model)
 
-# -------------------------------------------------------
-# D. Prediction / Testing
-# -------------------------------------------------------
-# Calculate scores for the Anomalies (Running)
-alpha_test <- get_conformity_score(fd_test, mean_curve_train)
+# C. Density Estimation (KDE)
+# Use Hpi for optimal bandwidth selection
+H_band <- Hpi(x = scores_train) 
+kde_model <- kde(x = scores_train, H = H_band)
 
-# Compute P-Values
-# p_val = (Count(Cal_Scores >= Test_Score) + 1) / (N_Cal + 1)
+get_density_score <- function(new_scores, kde_obj) {
+  dens_vals <- predict(kde_obj, x = new_scores)
+  dens_vals[dens_vals < 1e-300] <- 1e-300 # Avoid log(0)
+  return(-log(dens_vals))
+}
+
+alpha_cal <- get_density_score(scores_cal, kde_model)
+alpha_test <- get_density_score(scores_test, kde_model)
+
+# D. P-Values
 calculate_p_value <- function(new_score, cal_scores) {
   (sum(cal_scores >= new_score) + 1) / (length(cal_scores) + 1)
 }
-
 p_values <- sapply(alpha_test, calculate_p_value, cal_scores = alpha_cal)
 
-# -------------------------------------------------------
-# E. Results & Visualization
-# -------------------------------------------------------
-epsilon <- 0.05 # Significance level
-is_detected <- p_values < epsilon
-detection_rate <- sum(is_detected) / length(is_detected) * 100
+# E. Results
+detection_rate <- mean(p_values < 0.05) * 100
+print(paste("Anomaly Detection Rate:", round(detection_rate, 2), "%"))
 
-print(paste("Anomaly Detection Rate (Running detected as Non-Conformal):", round(detection_rate, 2), "%"))
+# Visual 1: PCA Space
+df_pca <- data.frame(
+  PC1 = c(scores_train[,1], scores_cal[,1], scores_test[,1]),
+  PC2 = c(scores_train[,2], scores_cal[,2], scores_test[,2]),
+  Group = c(rep("Train", nrow(scores_train)),
+            rep("Cal", nrow(scores_cal)),
+            rep("Test (Run)", nrow(scores_test)))
+)
 
-# VISUALIZATION: Score Separation
-# We combine scores into a dataframe to plot the separation
+p_pca <- ggplot(df_pca, aes(x=PC1, y=PC2, color=Group)) +
+  geom_point(alpha=0.6) +
+  stat_density_2d(data=subset(df_pca, Group=="Train"), color="black", alpha=0.5) +
+  labs(title = "PCA Space: Normal Density vs Anomalies") + theme_minimal()
+print(p_pca)
+
+# Visual 2: Boxplot
 df_scores <- data.frame(
   Score = c(alpha_cal, alpha_test),
-  Group = c(rep(paste("Normal:", training_label), length(alpha_cal)), 
-            rep("Anomaly: Running", length(alpha_test)))
+  Group = c(rep("Normal", length(alpha_cal)), rep("Anomaly", length(alpha_test)))
 )
 
 p_scores <- ggplot(df_scores, aes(x = Group, y = Score, fill = Group)) +
   geom_boxplot() +
-  scale_y_log10() + 
-  labs(title = "Conformity Scores: Normal vs Anomaly",
-       subtitle = paste("Reference Class:", training_label),
-       y = "Integrated Squared Error (Log Scale)") +
-  theme_minimal() +
   geom_hline(yintercept = quantile(alpha_cal, 0.95), linetype="dashed", color="red") +
-  annotate("text", x=1, y=quantile(alpha_cal, 0.95), label="95% Threshold", vjust=-1)
-
+  labs(title = "Conformity Scores (-Log Density)", y = "Score") + theme_minimal()
 print(p_scores)
+
+print("Implementation Complete.")
+
+# ==========================================
+# 8. OUTLIER INVESTIGATION
+# ==========================================
+# You noticed outliers in the boxplot. Let's find out exactly what they are.
+# These are likely "Walking" windows that had unusually high energy (e.g., a stumble).
+
+# 1. Identify Outlier Indices using standard Boxplot logic (1.5 * IQR)
+# We look at 'alpha_cal' (The scores of the Calibration/Walking set)
+bp_stats <- boxplot.stats(alpha_cal)
+outlier_values <- bp_stats$out
+outlier_indices <- which(alpha_cal %in% outlier_values)
+
+print(paste("Found", length(outlier_indices), "outliers in the Calibration (Walking) set."))
+print("Outlier Scores:")
+print(outlier_values)
+
+# 2. Visualize the Top 2 Extreme Outliers
+# We plot them against the "Mean Walking Curve" to see WHY they were flagged.
+if(length(outlier_indices) > 0) {
+  # Sort to get the most extreme ones (highest scores)
+  sorted_outliers <- outlier_indices[order(alpha_cal[outlier_indices], decreasing = TRUE)]
+  top_outliers <- head(sorted_outliers, 2) # Grab top 2
+  
+  # Prepare Plotting
+  par(mfrow=c(1,1))
+  t_eval <- seq(0, 5, length.out=100)
+  
+  # A. Plot the Ideal Mean Curve (Black)
+  mean_vals <- eval.fd(t_eval, mean_curve_train)
+  plot(t_eval, mean_vals, type="l", lwd=4, col="black", 
+       ylim=c(0, max(mean_vals)*3), # Scale y-axis to fit potential spikes
+       main = "Why are these Outliers?",
+       xlab = "Time (s)", ylab = "Acceleration Magnitude (m/s^2)")
+  
+  # B. Plot the Outlier Curves (Red)
+  outlier_curves <- eval.fd(t_eval, fd_cal[top_outliers])
+  matlines(t_eval, outlier_curves, col="red", lwd=2, lty=1)
+  
+  # C. Plot a few "Normal" curves for context (Gray)
+  normal_indices <- setdiff(1:length(alpha_cal), outlier_indices)
+  some_normals <- head(normal_indices, 5)
+  normal_curves <- eval.fd(t_eval, fd_cal[some_normals])
+  matlines(t_eval, normal_curves, col="gray", lwd=1, lty=2)
+  
+  legend("topright", 
+         legend=c("Mean Walking", "The Outliers", "Typical Walking"), 
+         col=c("black", "red", "gray"), lwd=c(4, 2, 1), lty=c(1,1,2))
+  
+  print("Plot generated. The RED lines are the outliers you saw.")
+} else {
+  print("No statistical outliers found in the Calibration set based on 1.5*IQR rule.")
+}
+
+# ==========================================
+# 9. VISUALIZATION: ZOOMED BOXPLOT (Focus on Normal)
+# ==========================================
+# The "Running" scores are likely huge (e.g., 100x larger), which squashes the 
+# "Walking" boxplot. Here, we force the Y-axis to zoom in on the Normal distribution 
+# and the Threshold, cutting off the top of the Anomaly box.
+
+print("Generating Zoomed Boxplot...")
+
+# 1. Define Zoom Limits based on 'Normal' Data only
+# We want to see the 95% Threshold and the bulk of Normal data.
+# We ignore the massive Running scores for the upper limit calculation.
+threshold_val <- quantile(alpha_cal, 0.95)
+
+# Calculate Upper Fence of Normal data (Standard Boxplot logic)
+q3_cal <- quantile(alpha_cal, 0.75)
+iqr_cal <- IQR(alpha_cal)
+upper_fence_cal <- q3_cal + (1.5 * iqr_cal)
+
+# Set the View Limit to slightly above the Threshold or the Normal Fence
+# (whichever is higher), but not all the way to the Running scores.
+y_limit_upper <- max(threshold_val, upper_fence_cal) * 1.5 
+y_limit_lower <- min(alpha_cal) * 0.9
+
+# 2. Plot with Coordinate Zoom (coord_cartesian)
+# NOTE: We use coord_cartesian instead of scale_y_continuous limits 
+# because coord_cartesian zooms in without removing the data points from 
+# the statistics calculations.
+p_zoomed <- ggplot(df_scores, aes(x = Group, y = Score, fill = Group)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) + # Hide outliers dots
+  
+  # Add the Threshold Line
+  geom_hline(yintercept = threshold_val, linetype = "dashed", color = "red", linewidth = 1) +
+  
+  # FORCE ZOOM
+  coord_cartesian(ylim = c(y_limit_lower, y_limit_upper)) +
+  
+  # Labels and Theme
+  labs(title = "Conformity Scores (Zoomed Focus)",
+       subtitle = paste("Y-axis limited to", round(y_limit_upper, 2), 
+                        "to show Normal spread vs Threshold"),
+       y = "Score (-log Density)") +
+  theme_minimal() +
+  scale_fill_manual(values = c("gray", "#e41a1c")) +
+  annotate("text", x = 1, y = threshold_val, label = "95% Threshold", 
+           vjust = -1, color = "red", fontface = "bold")
+
+print(p_zoomed)
