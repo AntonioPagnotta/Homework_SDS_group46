@@ -27,7 +27,7 @@ Once obtained the data, first thing we do is transform the **raw, asynchronously
 In order to do this, we first order the raw data by timestamp and converts **absolute time** (milliseconds) into a **relative, easy to read scale** starting at exactly 0; established a universal **10Hz sampling rate**, creating a target timeline with exactly one row every **0.1 seconds**. While we keep the full sensor suite synchronized for a complete record, we primarily target the **Accelerometer** data for the core of our analysis. We used the **`zoo` package** to calculate missing values. In this way, if a sensor didn't record a value at an exact 0.1s interval, the script **mathematically estimates** it by drawing a **straight line** between the nearest surrounding data points.
 
 ```{r preprocessing}
-df_raw <- read.csv("dati_sgravati (1).csv")
+df_raw <- read.csv("hmw_data.csv")
 
 # Sort by timestamp and convert to relative seconds
 df_raw <- df_raw[order(df_raw$timestamp), ]
@@ -48,7 +48,9 @@ interpolate_sensor <- function(time_col, val_col, new_grid) {
   as.numeric(na.approx(z, xout = new_grid, rule = 2))
 }
 
-for (s in sensor_cols) {df_aligned[[s]] <- interpolate_sensor(df_raw$time_sec, df_raw[[s]], t_grid)}
+for (s in sensor_cols) {
+  df_aligned[[s]] <- interpolate_sensor(df_raw$time_sec, df_raw[[s]], t_grid)
+}
 ```
 
 ### B-Spline Smoothing and Segmentation
@@ -79,7 +81,8 @@ smooth_mag <- numeric(length(t_grid))
 for(i in 1:num_chunks) {
   idx <- ((i-1)*chunk_size + 1):min(i*chunk_size, length(t_grid))
   nbasis <- max(4, round(length(idx) / 4))
-  basis_obj <- create.bspline.basis(rangeval = range(t_grid[idx]), nbasis = nbasis, norder = 4)
+  basis_obj <- create.bspline.basis(rangeval = range(t_grid[idx]),
+                                    nbasis = nbasis, norder = 4)
   fd_par <- fdPar(basis_obj, Lfdobj = 2, lambda = 0.01)
   sm_res <- smooth.basis(t_grid[idx], raw_mag[idx], fd_par)
   smooth_mag[idx] <- as.numeric(eval.fd(t_grid[idx], sm_res$fd))
@@ -88,7 +91,8 @@ df_aligned$SmoothMag <- smooth_mag
 
 # Segment via Rolling Variance + K-Means
 window_size <- round(5 / dt) # 5 second rolling window
-roll_var <- rollapply(df_aligned$SmoothMag, width = window_size, FUN = var, fill = 0, align = "right")
+roll_var <- rollapply(df_aligned$SmoothMag, width = window_size,
+                      FUN = var, fill = 0, align = "right")
 
 set.seed(123)
 log_var <- log(roll_var + 1e-6)
@@ -98,11 +102,13 @@ centers_sorted <- sort(km$centers)
 thresh1 <- exp(mean(centers_sorted[1:2]))
 thresh2 <- exp(mean(centers_sorted[2:3]))
 
-df_aligned$Activity <- cut(roll_var, breaks = c(-Inf, thresh1, thresh2, Inf), labels = c("Sedentary", "Walking", "Running"))
+df_aligned$Activity <- cut(roll_var, breaks = c(-Inf, thresh1, thresh2, Inf),
+                           labels = c("Sedentary", "Walking", "Running"))
 
 # Clean labels with median filter to remove micro-glitches
 act_smooth <- runmed(as.integer(df_aligned$Activity), k = round(1/dt)+1)
-df_aligned$Activity <- factor(act_smooth, levels=1:3, labels=c("Sedentary", "Walking", "Running"))
+df_aligned$Activity <- factor(act_smooth, levels=1:3,
+                              labels=c("Sedentary", "Walking", "Running"))
 ```
 
 ### FDA Exploration
@@ -124,8 +130,10 @@ window_duration <- 5
 n_windows <- floor(nrow(df_aligned) / pts_per_window)
 trunc_len <- n_windows * pts_per_window
 
-acc_matrix <- matrix(df_aligned$SmoothMag[1:trunc_len], nrow = pts_per_window, ncol = n_windows)
-activity_matrix <- matrix(as.character(df_aligned$Activity[1:trunc_len]), nrow=pts_per_window)
+acc_matrix <- matrix(df_aligned$SmoothMag[1:trunc_len],
+                     nrow = pts_per_window, ncol = n_windows)
+activity_matrix <- matrix(as.character(df_aligned$Activity[1:trunc_len]),
+                          nrow=pts_per_window)
 
 get_majority_label <- function(v) {
   tab <- table(v)
@@ -141,17 +149,22 @@ maj_props  <- as.numeric(maj_stats["prop", ])
 
 keep <- maj_props >= 0.8  # Keep windows that are at least 80% one activity
 acc_matrix <- acc_matrix[, keep, drop = FALSE]
-window_labels <- factor(maj_labels[keep], levels = c("Sedentary","Walking","Running"))
+window_labels <- factor(maj_labels[keep],
+                        levels = c("Sedentary","Walking","Running"))
 
 # Create FDA Object
 window_time <- seq(0, window_duration, length.out = pts_per_window)
-fda_basis <- create.bspline.basis(rangeval = c(0, window_duration), nbasis = 15, norder = 4)
+fda_basis <- create.bspline.basis(rangeval = c(0, window_duration),
+                                  nbasis = 15, norder = 4)
 acc_fd <- Data2fd(window_time, acc_matrix, fda_basis)
 
 
 # Find global y-axis limits so all 3 plots share the same scale
 plot_grid_eval <- seq(0, window_duration, length.out = 100)
 ylim_acc <- range(eval.fd(plot_grid_eval, acc_fd))
+```
+
+```{r FDA_E_1, echo=FALSE}
 
 par(mfrow = c(1, 3), oma = c(0, 0, 2, 0)) # Set up 1x3 grid
 for(act in c("Sedentary", "Walking", "Running")) {
@@ -166,16 +179,24 @@ for(act in c("Sedentary", "Walking", "Running")) {
     title(main = paste(act, "- No Data"))
   }
 }
-mtext("FDA: 5-Second Acceleration Windows", side = 3, line = 0, outer = TRUE, font = 2, cex = 1.3)
-par(mfrow = c(1, 1), oma = c(0, 0, 0, 0)) # Reset layout
+mtext("FDA: 5-Second Acceleration Windows", side = 3,
+      line = 0, outer = TRUE, font = 2, cex = 1.3)
+```
+
+In these **5‑second FDA window**s, Sedentary curves is flat near zero, confirming that the segmentation plus the purity filter isolates motionless periods. Walking windows show medium‑level, relatively regular oscillations, representing periodic steps with moderate variability. Running windows populate the entire plot with dense and variable trajectories, reflecting a more heterogeneous impact. Using a common y‑axis across panels makes the intensity ordering clear to visualize.
 
 
+```{r FDA_E_2}
+# 1st derivative
 acc_deriv_fd <- deriv.fd(acc_fd, 1)
 
 # Find global y-axis limits for the derivative
 ylim_jerk <- range(eval.fd(plot_grid_eval, acc_deriv_fd))
 
-par(mfrow = c(1, 3), oma = c(0, 0, 2, 0)) # Set up 1x3 grid
+```
+
+```{r FDA_E_3, echo=FALSE}
+par(mfrow = c(1, 3), oma = c(0, 0, 2, 0))
 for(act in c("Sedentary", "Walking", "Running")) {
   idx <- which(window_labels == act)
   if(length(idx) > 0) {
@@ -188,9 +209,13 @@ for(act in c("Sedentary", "Walking", "Running")) {
     title(main = paste(act, "- No Data"))
   }
 }
-mtext("FDA Derivative Analysis: Jerk (1st Derivative)", side = 3, line = 0, outer = TRUE, font = 2, cex = 1.3)
-par(mfrow = c(1, 1), oma = c(0, 0, 0, 0)) # Reset layout
+mtext("FDA Derivative Analysis: Jerk (1st Derivative)",
+      side = 3, line = 0, outer = TRUE, font = 2, cex = 1.3)
+```
 
+This **jerk plot** shows how sharply acceleration changes within each 5‑second window. In Sedentary, curves are essentially flat around zero, confirming that the smoothing plus segmentation removed almost all irregular motion. Walking shows small, localized bursts at the end of the window, after a steady smooth motion. Running displays large, frequent oscillations over all the interval, indicating sustained high‑frequency impacts and much more irregular dynamics.
+
+```{r FDA_E_4}
 
 plot_grid <- seq(0, window_duration, length.out = 100)
 eval_acc <- eval.fd(plot_grid, acc_fd)
@@ -213,27 +238,34 @@ df_summary <- df_eval %>%
     SD_Acc = sd(Acc, na.rm = TRUE),
     .groups = "drop"
   ) %>%
-  mutate(Activity = factor(Activity, levels = c("Sedentary", "Walking", "Running")))
+  mutate(Activity = factor(Activity,
+                           levels = c("Sedentary", "Walking", "Running")))
+```
 
-p_means <- ggplot(df_summary, aes(x = Time, y = Mean_Acc, color = Activity, fill = Activity)) +
+```{r FDA_E_5, echo=FALSE}
+p_means <- ggplot(df_summary, aes(x = Time, y = Mean_Acc,
+                                  color = Activity, fill = Activity)) +
   geom_line(linewidth = 1.2) +
   geom_ribbon(aes(ymin = Mean_Acc - SD_Acc, ymax = Mean_Acc + SD_Acc),
               alpha = 0.2, color = NA) +
   scale_color_manual(values = col_map) +
   scale_fill_manual(values = col_map) +
-  labs(title = "Functional Means & Variance by Activity", subtitle = "Solid line: Mean | Shaded area: ±1 Standard Deviation", x = "Time (s)", y = expression("Acceleration Magnitude " (m/s^2))) +
+  labs(title = "Functional Means & Variance by Activity",
+       subtitle = "Solid line: Mean | Shaded area: ±1 Standard Deviation",
+       x = "Time (s)", y = expression("Acceleration Magnitude " (m/s^2))) +
   theme_minimal() +
-  theme(legend.position = "bottom", panel.grid.major = element_line(color = "grey90"))
-
+  theme(legend.position = "bottom",
+        panel.grid.major = element_line(color = "grey90"))
 print(p_means)
+```
 
+This plot summarizes the **average acceleration profile** of each activity and its **variability** over the 5‑second window. Sedentary stays essentially flat near zero confirming almost no movement and very low variance. Walking has the highest mean level and widest band, reflecting greater variability despite moderate intensity. Running is slightly lower in mean and variance indicating more consistently high amplitude. The overlapping means tells us that class‑specific FPCA ellipsoids are needed to a deeper analysis
 
-
-par(mfrow = c(1, 3), oma = c(0, 0, 2, 0)) # Set up 3-panel plot
+```{r FDA_E_6, echo=FALSE}
+par(mfrow = c(1, 3), oma = c(0, 0, 2, 0))
 for(act in c("Sedentary", "Walking", "Running")) {
   idx <- which(window_labels == act)
   if(length(idx) > 5) {
-    # CORRECTED: fbplot expects numeric matrix, not fd object
     plot_data <- eval.fd(plot_grid_eval, acc_fd[idx])
     fbplot(plot_data, plot_grid_eval,
            main = paste("Functional Boxplot:", act),
@@ -245,9 +277,12 @@ for(act in c("Sedentary", "Walking", "Running")) {
     title(main = paste(act, "- Insufficient Data"))
   }
 }
-mtext("Functional Boxplots by Activity", side = 3, line = 0, outer = TRUE, font = 2, cex = 1.3)
-par(mfrow = c(1, 1), oma = c(0, 0, 0, 0)) # Reset plotting layout
+mtext("Functional Boxplots by Activity", side = 3,
+      line = 0, outer = TRUE, font = 2, cex = 1.3)
 ```
+
+These **functional boxplots** summarize the distribution of all 5‑second curves using depth, so the central band represents the most typical trajectory for each activity. Sedentary has an extremely tight box and almost no black outlier curves, confirming very homogeneous idle behaviour after segmentation and purity filtering. Walking and especially Running show thicker boxes and a few clear outliers, corresponding to atypical strides or short transitions that deviate from the dominant pattern. These outlying curves are exactly the ones expected to have large Mahalanobis scores in FPCA space and thus to fall outside the conformal ellipsoids in the prediction step.
+
 
 ### Conformal Prediction
 
@@ -263,7 +298,6 @@ With this threshold, we can generate our **prediction bands** . This process con
 
 Finally, to ensure our **theoretical guarantees** hold up in practice, we check if 90% of our actual "Walking" data falls within the constructed "Walking" band and verify if "Running" data correctly falls outside that very same "Walking" band.
 
-
 ```{r CP}
 activities <- c("Sedentary", "Walking", "Running")
 conf_alpha <- 0.10
@@ -274,7 +308,7 @@ df_proj_all <- data.frame()
 grid_eval <- seq(0, window_duration, length.out = 100)
 
 # Diagnostic print to check labels
-cat("\nCurrent distribution of functional windows:\n")
+cat("Current distribution of functional windows:\n")
 print(table(window_labels, useNA = "always"))
 
 coverage_results <- data.frame(
@@ -285,13 +319,14 @@ coverage_results <- data.frame(
 )
 
 for(act in activities) {
-  cat(sprintf("\n--- Processing Class: %s ---\n", act))
+  cat(sprintf("--- Processing Class: %s ---\n", act))
   
   # Force character matching to avoid factor level issues
   idx_act <- which(as.character(window_labels) == act)
   
   if(length(idx_act) < 10) {
-    cat(sprintf("Not enough data for %s (Found %d windows). Skipping...\n", act, length(idx_act)))
+    cat(sprintf("Not enough data for %s (Found %d windows). Skipping...\n",
+                act, length(idx_act)))
     next
   }
   
@@ -314,7 +349,8 @@ for(act in activities) {
   cumvar <- cumsum(pca_act$varprop)
   p_keep <- which(cumvar >= 0.90)[1]
   if (is.na(p_keep)) p_keep <- min(3, nharm_max)
-  cat(sprintf("  Using %d PCs (explains %.1f%% var)\n", p_keep, cumvar[p_keep]*100))
+  cat(sprintf("  Using %d PCs (explains %.1f%% var)\n",
+              p_keep, cumvar[p_keep]*100))
   
   # FPCA Harmonics Plot
   tryCatch({
@@ -322,7 +358,8 @@ for(act in activities) {
     plot(pca_act$harmonics[1:min(2, p_keep)],
          main = paste("FPCA Harmonics:", act),
          xlab = "Time (s)", ylab = "Harmonic")
-    mtext(paste("FPCA Perturbations:", act), side = 3, line = -1, outer = TRUE, font = 2)
+    mtext(paste("FPCA Perturbations:", act), side = 3,
+          line = -1, outer = TRUE, font = 2)
     par(mfrow = c(1, 1))
   }, error = function(e) {
     cat("Warning: Could not plot FPCA harmonics:", e$message, "\n")
@@ -360,7 +397,8 @@ for(act in activities) {
   cat(sprintf("  Empirical coverage for %s (should be ≈ %.2f): %.3f\n",
               act, 1 - conf_alpha, coverage_act))
   
-  # 2) Detection: how often do other-activity windows fall OUTSIDE this band's ellipsoid?
+  # 2) Detection: how often do other-activity windows fall OUTSIDE this band's
+  #    ellipsoid?
   idx_other_global <- which(window_labels != act)
   if (length(idx_other_global) > 0) {
     fd_other <- acc_fd[idx_other_global]
@@ -377,7 +415,8 @@ for(act in activities) {
       scores_other <- t(scores_other)
     }
     
-    d2_other <- mahalanobis(scores_other, center = mu_scores, cov = Sigma_scores)
+    d2_other <- mahalanobis(scores_other, center = mu_scores,
+                            cov = Sigma_scores)
     
     detection_other <- mean(d2_other > q_hat)
     cat(sprintf("  Detection of non-%s windows (d2 > q_hat): %.3f\n",
@@ -450,7 +489,11 @@ for(act in activities) {
   }
   
   # Store band data
-  df_bands_all <- rbind(df_bands_all, data.frame(Activity = act, t = grid_eval, center = band_center, upper = band_upper, lower = band_lower))
+  df_bands_all <- rbind(df_bands_all, data.frame(Activity = act,
+                                                 t = grid_eval,
+                                                 center = band_center,
+                                                 upper = band_upper,
+                                                 lower = band_lower))
   
   # Reconstruct calibration curves for plotting within the band
   proj_calib <- matrix(NA, nrow = length(grid_eval), ncol = nrow(scores_calib))
@@ -465,10 +508,18 @@ for(act in activities) {
     curve = rep(paste0(act, "_", 1:ncol(proj_calib)), each = length(grid_eval))
   ))
 }
+```
 
+```{r CP_1, echo=FALSE}
+cat("Coverage results:\n")
 print(coverage_results)
 ```
 
+The **coverage table** shows that all three conformal sets achieve empirical coverage essentially equal to the nominal 90%, confirming that the inductive conformal construction in FPCA score space works as intended for each activity. Sedentary also has a very high Detection_Other (~0.93), meaning almost all non‑sedentary windows fall outside the sedentary ellipsoid, which fits the strong separation seen in the mean/boxplot analyses. Walking and Running, instead, have low Detection_Other (~0.04–0.06), indicating that many non‑walking and non‑running windows still lie inside their ellipsoids; this is consistent with their higher variability and partial overlap in latent space.
+
+The **class‑specific FPCA score plots** make this explicit: outliers for Running and Walking sit on the right tail of PC1 but still form a continuum with inliers, while Sedentary outliers are almost all separated in PC1.
+
+Finally, the single **retained harmonic per class** explains >90–99% of variance and has smooth, low‑frequency shape, confirming that a one‑dimensional Gaussian model in score space is a good approximation and that ellipsoidal conformal sets are a natural choice for these activity‑specific functional signatures.
 
 ### Conformal Vis.
 
@@ -480,7 +531,7 @@ While the first plot focuses on the temporal aspect, the **Global Latent Space E
 
 ```{r VIS}
 if (nrow(df_bands_all) == 0) { 
-  cat("\n[ERROR] No data was generated for the bands")
+  cat("[ERROR] No data was generated for the bands")
 } else {
   
   # Ensure factors for consistent plotting order
@@ -489,14 +540,26 @@ if (nrow(df_bands_all) == 0) {
   
   # Conformal Bands
   p_bands_multi <- ggplot() +
-    geom_ribbon(data = df_bands_all, aes(x = t, ymin = lower, ymax = upper, fill = Activity), alpha = 0.3) +
-    geom_line(data = df_proj_all, aes(x = t, y = val, group = curve, color = Activity), alpha = 0.4, linewidth = 0.4) +
-    geom_line(data = df_bands_all, aes(x = t, y = center, color = Activity), linewidth = 0.8, linetype = "dashed") + facet_wrap(~Activity, scales = "free_y") +
+    geom_ribbon(data = df_bands_all, aes(x = t, ymin = lower, ymax = upper,
+                                         fill = Activity), alpha = 0.3) +
+    geom_line(data = df_proj_all,
+              aes(x = t, y = val, group = curve, color = Activity),
+              alpha = 0.4,
+              linewidth = 0.4) +
+    geom_line(data = df_bands_all,
+              aes(x = t, y = center, color = Activity),
+              linewidth = 0.8, linetype = "dashed") +
+    facet_wrap(~Activity, scales = "free_y") +
     scale_fill_manual(values = col_map) +
     scale_color_manual(values = col_map) +
-    labs(title = "Conformal Prediction Bands for All Activities (90% Coverage)", subtitle = "Gaussian Mixture Components: Projections from FPCA Mahalanobis Ellipsoids", x = "Relative Time (seconds)", y = "Acceleration Magnitude") +
+    labs(title = "Conformal Prediction Bands for All Activities (90% Coverage)",
+         subtitle = "Gaussian Mixture Components:
+         Projections from FPCA Mahalanobis Ellipsoids",
+         x = "Relative Time (seconds)", y = "Acceleration Magnitude") +
     theme_bw() +
-    theme(legend.position = "none", strip.background = element_rect(fill="grey90"), trip.text = element_text(face="bold", size=12), panel.grid.major = element_line(color = "grey95"))
+    theme(legend.position = "none",
+          strip.background = element_rect(fill="grey90"),
+          panel.grid.major = element_line(color = "grey95"))
   
   print(p_bands_multi)
   
@@ -505,18 +568,27 @@ if (nrow(df_bands_all) == 0) {
   df_latent <- data.frame(
     PC1 = pca_global$scores[, 1],
     PC2 = pca_global$scores[, 2],
-    Activity = factor(window_labels, levels = c("Sedentary", "Walking", "Running"))
+    Activity = factor(window_labels,
+                      levels = c("Sedentary", "Walking", "Running"))
   )
   
   p_latent <- ggplot(df_latent, aes(x = PC1, y = PC2, color = Activity)) +
     geom_point(alpha = 0.6, size = 2) +
-    stat_ellipse(type = "norm", level = 1 - conf_alpha, linewidth = 1.2, aes(fill = Activity), geom = "polygon", alpha = 0.1) +
+    stat_ellipse(type = "norm", level = 1 - conf_alpha, linewidth = 1.2,
+                 aes(fill = Activity), geom = "polygon", alpha = 0.1) +
     scale_color_manual(values = col_map) +
     scale_fill_manual(values = col_map) +
-    labs(title = "Latent Space Conformal Regions (90% Coverage)", subtitle = "Global PC1 vs PC2 Scores with Gaussian Ellipsoids", x = "Principal Component 1", y = "Principal Component 2") +
+    labs(title = "Latent Space Conformal Regions (90% Coverage)",
+         subtitle = "Global PC1 vs PC2 Scores with Gaussian Ellipsoids",
+         x = "Principal Component 1", y = "Principal Component 2") +
     theme_bw() +
-    theme(legend.position = "bottom", panel.grid.major = element_line(color = "grey95"))
+    theme(legend.position = "bottom",
+          panel.grid.major = element_line(color = "grey95"))
   
   print(p_latent)
 }
 ```
+
+The **latent‑space** plot shows all 5‑second windows projected onto the first two FPCA components, with separate Gaussian ellipses at 90% level for Sedentary, Walking, and Running. Sedentary points form a short, tight segment near the origin, while Running spreads widely along PC1 and PC2, illustrating why Sedentary is easiest to separate in conformal score space. Walking sits between them, overlapping partially with both, which explains its lower Detection_Other in the coverage table.
+
+The **time‑domain conformal bands panel** then shows each class ellipsoid into acceleration space with narrow, low‑amplitude tubes for Sedentary, and progressively higher and wider tubes for Walking and Running. Most projected calibration curves stay inside their respective tubes, visually confirming the ≈90% empirical coverage and showing that the FPCA‑Mahalanobis conformal approach captures both intensity and variability of each activity.
