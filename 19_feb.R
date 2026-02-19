@@ -147,13 +147,18 @@ df_bands_all <- data.frame()
 df_proj_all <- data.frame()
 grid_eval <- seq(0, window_duration, length.out = 100)
 
+# Diagnostic print to check labels
+cat("\nCurrent distribution of functional windows:\n")
+print(table(window_labels, useNA = "always"))
+
 for(act in activities) {
   cat(sprintf("\n--- Processing Class: %s ---\n", act))
   
-  idx_act <- which(window_labels == act)
+  # Force character matching to avoid factor level issues
+  idx_act <- which(as.character(window_labels) == act)
   
   if(length(idx_act) < 10) {
-    cat(sprintf("Not enough data for %s, skipping...\n", act))
+    cat(sprintf("Not enough data for %s (Found %d windows). Skipping...\n", act, length(idx_act)))
     next
   }
   
@@ -232,36 +237,41 @@ for(act in activities) {
   ))
 }
 
-# Ensure factors for consistent plotting order
-df_bands_all$Activity <- factor(df_bands_all$Activity, levels = activities)
-df_proj_all$Activity <- factor(df_proj_all$Activity, levels = activities)
-
 # =============================
 # 5. CONFORMAL VISUALIZATION (3-PANEL)
 # =============================
-cat("\n=== STEP 5: VISUALIZING 3-PANEL PREDICTION BANDS ===\n")
+cat("\n=== STEP 5: VISUALIZING PREDICTION BANDS ===\n")
 
-# Define distinct colors for the activities to make them pop
-act_colors <- c("Sedentary" = "#377eb8", "Walking" = "#4daf4a", "Running" = "#e41a1c")
-
-p_bands_multi <- ggplot() +
-  # Draw the Conformal Bands
-  geom_ribbon(data = df_bands_all, aes(x = t, ymin = lower, ymax = upper, fill = Activity), alpha = 0.3) +
-  # Draw the Projected Curves
-  geom_line(data = df_proj_all, aes(x = t, y = val, group = curve, color = Activity), alpha = 0.4, linewidth = 0.4) +
-  # Draw the Mean Center Line
-  geom_line(data = df_bands_all, aes(x = t, y = center), color = "black", linewidth = 0.8, linetype = "dashed") +
-  # Formatting
-  facet_wrap(~Activity, scales = "free_y") + 
-  scale_fill_manual(values = act_colors) +
-  scale_color_manual(values = act_colors) +
-  labs(title = "Conformal Prediction Bands for All Activities (90% Coverage)",
-       subtitle = "Gaussian Mixture Components: Projections from FPCA Mahalanobis Ellipsoids",
-       x = "Relative Time (seconds)", y = "Acceleration Magnitude") +
-  theme_bw() +
-  theme(legend.position = "none",
-        strip.background = element_rect(fill="grey90"),
-        strip.text = element_text(face="bold", size=12))
-
-print(p_bands_multi)
-cat("\nAnalysis Complete. Multi-class prediction bands generated successfully!\n")
+if (nrow(df_bands_all) == 0) {
+  cat("\n[ERROR] No data was generated for the bands. Please re-run Steps 1-3 to ensure your data is loaded and segmented correctly.\n")
+} else {
+  
+  # Ensure factors for consistent plotting order
+  df_bands_all$Activity <- factor(df_bands_all$Activity, levels = activities)
+  df_proj_all$Activity <- factor(df_proj_all$Activity, levels = activities)
+  
+  # Define distinct colors for the activities to make them pop
+  act_colors <- c("Sedentary" = "#377eb8", "Walking" = "#4daf4a", "Running" = "#e41a1c")
+  
+  p_bands_multi <- ggplot() +
+    # Draw the Conformal Bands
+    geom_ribbon(data = df_bands_all, aes(x = t, ymin = lower, ymax = upper, fill = Activity), alpha = 0.3) +
+    # Draw the Projected Curves
+    geom_line(data = df_proj_all, aes(x = t, y = val, group = curve, color = Activity), alpha = 0.4, linewidth = 0.4) +
+    # Draw the Mean Center Line
+    geom_line(data = df_bands_all, aes(x = t, y = center), color = "black", linewidth = 0.8, linetype = "dashed") +
+    # Formatting
+    facet_wrap(~Activity, scales = "free_y") + 
+    scale_fill_manual(values = act_colors) +
+    scale_color_manual(values = act_colors) +
+    labs(title = "Conformal Prediction Bands for All Activities (90% Coverage)",
+         subtitle = "Gaussian Mixture Components: Projections from FPCA Mahalanobis Ellipsoids",
+         x = "Relative Time (seconds)", y = "Acceleration Magnitude") +
+    theme_bw() +
+    theme(legend.position = "none",
+          strip.background = element_rect(fill="grey90"),
+          strip.text = element_text(face="bold", size=12))
+  
+  print(p_bands_multi)
+  cat("\nAnalysis Complete. Multi-class prediction bands generated successfully!\n")
+}
