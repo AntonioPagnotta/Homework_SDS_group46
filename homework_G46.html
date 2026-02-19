@@ -160,20 +160,28 @@ code span.ot { color: #007020; }
     <section id="main-content">
 <div id="data-preprocessing" class="section level3">
 <h3>Data Preprocessing</h3>
-<p>Once obtained the data, first thing we do is transform the raw,
-asynchronously recorded sensor data, into a clean, synchronized, and
-evenly spaced dataset. By a quick look at the data, we noticed that the
-sensors, rarely recorded their read value at the exact same millisecond,
-so this pipeline forces all sensor readings onto a shared timeline so
-they can be accurately compared and analyzed row by row. In order to do
-this, we first order the raw data by timestamp and converts absolute
-time (milliseconds) into a relative, easy to read scale starting at
-exactly 0; established a universal 10Hz sampling rate, creating a target
-timeline with exactly one row every 0.1 seconds; we used the zoo package
+<p>Once obtained the data, first thing we do is transform the
+<strong>raw, asynchronously recorded sensor data</strong>, into a
+<strong>clean, synchronized, and evenly spaced dataset</strong>. Our
+dataset contains high-dimensional telemetry from multiple sources,
+including <strong>Compass, Ambient Light, and Magnetic Rotation
+sensors</strong>. By a quick look at the data, we noticed that the
+sensors rarely recorded their read value at the exact same millisecond,
+so this pipeline forces all sensor readings—regardless of their
+type—onto a <strong>shared timeline</strong> so they can be accurately
+compared and analyzed row by row.</p>
+<p>In order to do this, we first order the raw data by timestamp and
+converts <strong>absolute time</strong> (milliseconds) into a
+<strong>relative, easy to read scale</strong> starting at exactly 0;
+established a universal <strong>10Hz sampling rate</strong>, creating a
+target timeline with exactly one row every <strong>0.1 seconds</strong>.
+While we keep the full sensor suite synchronized for a complete record,
+we primarily target the <strong>Accelerometer</strong> data for the core
+of our analysis. We used the <strong><code>zoo</code> package</strong>
 to calculate missing values. In this way, if a sensor didn’t record a
-value at an exact 0.1s interval, the script mathematically estimates it
-by drawing a straight line between the nearest surrounding data
-points.</p>
+value at an exact 0.1s interval, the script <strong>mathematically
+estimates</strong> it by drawing a <strong>straight line</strong>
+between the nearest surrounding data points.</p>
 <div class="sourceCode" id="cb1"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" tabindex="-1"></a>df_raw <span class="ot">&lt;-</span> <span class="fu">read.csv</span>(<span class="st">&quot;dati_sgravati (1).csv&quot;</span>)</span>
 <span id="cb1-2"><a href="#cb1-2" tabindex="-1"></a></span>
 <span id="cb1-3"><a href="#cb1-3" tabindex="-1"></a><span class="co"># Sort by timestamp and convert to relative seconds</span></span>
@@ -203,36 +211,45 @@ points.</p>
 then remain sedentary, and finally walk. However, real human movement is
 rarely perfectly constant. During the “running” interval, the subject
 might have briefly stopped to catch their breath (sedentary) or slowed
-down (walking). If we simply hard-coded the entire first time block as
-“Running,” we would inadvertently label standing still as a “run,”
-corrupting all our subsequent functional data analysis. To solve this,
-we built a pipeline to objectively extract the true physical state at
-any given moment, rather than relying on what the subject was supposed
-to be doing.</p>
+down (walking). If we simply <strong>hard-coded</strong> the entire
+first time block as “Running,” we would inadvertently label standing
+still as a “run,” corrupting all our subsequent <strong>functional data
+analysis</strong>. To solve this, we built a pipeline to objectively
+extract the <strong>true physical state</strong> at any given moment,
+rather than relying on what the subject was supposed to be doing.</p>
 <p>To initiate this process, we first had to standardize the raw sensor
-data. Because a smartphone or sensor can twist and bounce in a pocket
-(making its orientation unreliable), we collapsed these directional
-vectors (X, Y, and Z) into a single, direction-agnostic “intensity”
-value. Next, to filter out the high frequency hardware jitter, we fit a
-continuous mathematical B-spline curve through the data. As a practical
-measure to prevent the system from crashing, this smoothing was applied
-iteratively in chunks. Once we had this clean signal, we calculated how
-much the movement fluctuated over a rolling 5-second window, operating
-on the premise that high variance indicates intense movement, while
-near-zero variance indicates stillness.</p>
+data. Although our hardware captures rotation and orientation (via the
+<strong>Magnetic Rotation</strong> and <strong>Compass</strong>
+sensors), we have elected to use <strong>Linear Acceleration
+Magnitude</strong> as our primary analytical feature to ensure
+<strong>rotation invariance</strong>. Because a smartphone or sensor can
+twist and bounce in a pocket (making its orientation unreliable), we
+collapsed these directional vectors (X, Y, and Z) into a single,
+<strong>direction-agnostic “intensity” value</strong>.</p>
+<p>Next, to filter out the <strong>high-frequency hardware
+jitter</strong>, we fit a <strong>continuous mathematical B-spline
+curve</strong> through the data. As a practical measure to prevent the
+system from crashing, this smoothing was applied <strong>iteratively in
+chunks</strong>. Once we had this clean signal, we calculated how much
+the movement fluctuated over a <strong>rolling 5-second window</strong>,
+operating on the premise that <strong>high variance</strong> indicates
+intense movement, while <strong>near-zero variance</strong> indicates
+stillness.</p>
 <p>This variance metric is exactly where we account for the
-micro-variations in the user’s actual behavior. By applying K-Means
-clustering to our rolling variance, we automatically found the three
-true intensity clusters hidden inside the data. This means if the
-subject stopped for 10 seconds during the planned “Running” phase,
-k-Means organically detected the drop in variance and correctly
-reassigned those specific seconds to “Sedentary.”</p>
-<p>Finally, as a last quality-control step, we applied Label Filtering.
-We ran a median filter over the K-Means output labels to iron out
-physical impossibilities. For example, if the model classified a single
-0.1 second frame as “Running” sandwiched between continuous seconds of
+<strong>micro-variations</strong> in the user’s actual behavior. By
+applying <strong>K-Means clustering</strong> to our rolling variance, we
+automatically found the <strong>three true intensity clusters</strong>
+hidden inside the data. This means if the subject stopped for 10 seconds
+during the planned “Running” phase, K-Means <strong>organically
+detected</strong> the drop in variance and correctly reassigned those
+specific seconds to “Sedentary.”</p>
+<p>Finally, as a last quality-control step, we applied <strong>Label
+Filtering</strong>. We ran a <strong>median filter</strong> over the
+K-Means output labels to iron out <strong>physical
+impossibilities</strong>. For example, if the model classified a single
+0.1-second frame as “Running” sandwiched between continuous seconds of
 “Sedentary,” the filter smoothed it out, ensuring our final activity
-blocks made chronological and physical sense.</p>
+blocks made <strong>chronological and physical sense</strong>.</p>
 <div class="sourceCode" id="cb2"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb2-1"><a href="#cb2-1" tabindex="-1"></a><span class="co"># Smooth Acceleration magnitude to remove high-frequency jitter</span></span>
 <span id="cb2-2"><a href="#cb2-2" tabindex="-1"></a><span class="cf">if</span>(<span class="st">&quot;LinearAccelerometerSensor&quot;</span> <span class="sc">%in%</span> <span class="fu">names</span>(df_aligned)) {</span>
 <span id="cb2-3"><a href="#cb2-3" tabindex="-1"></a>  raw_mag <span class="ot">&lt;-</span> <span class="fu">abs</span>(df_aligned<span class="sc">$</span>LinearAccelerometerSensor)</span>
@@ -276,39 +293,42 @@ blocks made chronological and physical sense.</p>
 <div id="fda-exploration" class="section level3">
 <h3>FDA Exploration</h3>
 <p>Here we shift from standard row-by-row data manipulation into
-Functional Data Analysis (FDA). Instead of analyzing thousands of
-individual data points, we treat the chunks of time (5-second window) as
-a single, continuous mathematical curve and by analyzing the shape of
-these curves, extract the true physical “signatures” of different
+<strong>Functional Data Analysis (FDA)</strong>. Instead of analyzing
+thousands of individual data points, we treat the chunks of time
+(<strong>5-second windows</strong>) as a <strong>single, continuous
+mathematical curve</strong> and by analyzing the shape of these curves,
+extract the true <strong>physical “signatures”</strong> of different
 activities.</p>
 <p>To prepare the data for this analysis, we first apply a filtering
-step to chop the continuous timeline into manageable 5-second epochs.
-This is done to filter out “messy” windows (e.g., when the user is
-actively transitioning from standing to walking), keeping only the
-windows that are at least 80% pure in a single activity. Once these pure
-epochs are isolated, we proceed to FDA Object Creation, which converts
-the remaining discrete matrices back into continuous B-spline
-curves.</p>
+step to chop the continuous timeline into manageable <strong>5-second
+epochs</strong>. This is done to filter out “messy” windows (e.g., when
+the user is actively transitioning from standing to walking), keeping
+only the windows that are <strong>at least 80% pure</strong> in a single
+activity. Once these pure epochs are isolated, we proceed to <strong>FDA
+Object Creation</strong>, which converts the remaining discrete matrices
+back into <strong>continuous B-spline curves</strong>.</p>
 <p>With our mathematical functions established, we can begin our visual
 exploration. We start by looking at every single 5-second curve on top
-of each other (spaghetti plots). By forcing a shared Y-axis across the
-panels, we can instantly and visually compare the physical intensity of
-Sedentary vs. Walking vs. Running. To gain deeper biomechanical insights
-beyond raw magnitude, we performed a Jerk analysis computing the first
-derivative of the acceleration. In physics, the rate of change of
-acceleration is called “Jerk,” and isolating this metric perfectly
-highlights sharp, sudden impacts, such as a foot hitting the
-pavement.</p>
+of each other (<strong>spaghetti plots</strong>) . By forcing a
+<strong>shared Y-axis</strong> across the panels, we can instantly and
+visually compare the physical intensity of Sedentary vs. Walking
+vs. Running. To gain deeper biomechanical insights beyond raw magnitude,
+we performed a <strong>Jerk analysis</strong>, computing the
+<strong>first derivative of the acceleration</strong>. In physics, the
+rate of change of acceleration is called “Jerk,” and isolating this
+metric perfectly highlights <strong>sharp, sudden impacts</strong>, such
+as a foot hitting the pavement.</p>
 <p>Shifting our focus from individual strides to overall trends, we
-check the functional means and variance as a statistical summary. It
-plots the “average” movement signature for each activity, wrapped in a
-shaded ribbon representing the standard deviation (to understand how
-much individual strides vary from the average).</p>
+check the <strong>functional means and variance</strong> as a
+statistical summary . It plots the “average” movement signature for each
+activity, wrapped in a shaded ribbon representing the <strong>standard
+deviation</strong> (to understand how much individual strides vary from
+the average).</p>
 <p>Finally, to rigorously identify any anomalies within those general
-trends, we check the functional boxplots. This allow us to check the
-functional mean (most typical movement curve for that activity) and
-distinctly highlights any abnormal, irregular strides as outliers in
-black.</p>
+trends, we check the <strong>functional boxplots</strong> . This allows
+us to check the <strong>functional mean</strong> (most typical movement
+curve for that activity) and distinctly highlights any abnormal,
+irregular strides as <strong>outliers</strong> in black.</p>
 <div class="sourceCode" id="cb3"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" tabindex="-1"></a><span class="co"># Slice into 5-second fixed functional observations</span></span>
 <span id="cb3-2"><a href="#cb3-2" tabindex="-1"></a>pts_per_window <span class="ot">&lt;-</span> <span class="fu">round</span>(<span class="dv">5</span> <span class="sc">/</span> dt)</span>
 <span id="cb3-3"><a href="#cb3-3" tabindex="-1"></a>window_duration <span class="ot">&lt;-</span> <span class="dv">5</span></span>
@@ -443,34 +463,39 @@ black.</p>
 <div id="conformal-prediction" class="section level3">
 <h3>Conformal Prediction</h3>
 <p>Now we transition from descriptive statistics into the actual
-Conformal Prediction framework in order to quantify uncertainty. The
-primary goal here is to build a rigorous “profile” (or an ellipsoidal
-confidence region) for each activity. If a new movement curve falls
-inside the sedentary profile but outside the running profile, we can
+<strong>Conformal Prediction framework</strong> in order to
+<strong>quantify uncertainty</strong>. The primary goal here is to build
+a rigorous “profile” (or an <strong>ellipsoidal confidence
+region</strong>) for each activity. If a new movement curve falls inside
+the sedentary profile but outside the running profile, we can
 confidently classify it. Here we don’t guess the activity, but we
-provide a strict statistical guarantee (controlled by conf_alpha) about
-how likely the classification is correct.</p>
-<p>To construct these robust profiles, the first operation is Functional
-PCA (FPCA). This technique reduces complex 5-second curves into a few
-“Principal Components” (PCs). Instead of dealing with 50 distinct data
-points, a curve is now efficiently represented by just 2 or 3 numbers
-that successfully capture 90% of its overall shape.</p>
+provide a <strong>strict statistical guarantee</strong> (controlled by
+<code>conf_alpha</code>) about how likely the classification is
+correct.</p>
+<p>To construct these robust profiles, the first operation is
+<strong>Functional PCA (FPCA)</strong>. This technique reduces complex
+5-second curves into a few <strong>“Principal Components”
+(PCs)</strong>. Instead of dealing with 50 distinct data points, a curve
+is now efficiently represented by just 2 or 3 numbers that successfully
+capture 90% of its overall shape.</p>
 <p>Once the curves are reduced to these core components, we apply the
-Mahalanobis Distance. This acts as a “smart” distance metric that
-accounts for how the data is stretched or rotated in multi-dimensional
-space. We use it to calculate a Conformity Score—essentially measuring
-how “weird” or “normal” a curve is relative to its assigned class.</p>
-<p>Using these conformity scores, we find a cutoff value (<span class="math inline">\(q_{hat}\)</span>) such that <span class="math inline">\(1 - \alpha\)</span> (e.g., 90%) of our training
-data falls securely inside the boundary.</p>
-<p>With this threshold, we can generate our prediction bands. This
-process converts the abstract PC thresholds back into the physical time
-domain, creating a visual “envelope” or “tube.” If a future movement
-curve stays completely within this tube, it is statistically guaranteed
-to be consistent with that specific activity.</p>
-<p>Finally, to ensure our theoretical guarantees hold up in practice, we
-check if 90% of our actual “Walking” data falls within the constructed
-“Walking” band and verify if “Running” data correctly falls outside that
-very same “Walking” band.</p>
+<strong>Mahalanobis Distance</strong>. This acts as a “smart” distance
+metric that accounts for how the data is stretched or rotated in
+multi-dimensional space. We use it to calculate a <strong>Conformity
+Score</strong>—essentially measuring how “weird” or “normal” a curve is
+relative to its assigned class.</p>
+<p>Using these conformity scores, we find a cutoff value () such that
+(e.g., 90%) of our training data falls securely inside the boundary.</p>
+<p>With this threshold, we can generate our <strong>prediction
+bands</strong> . This process converts the abstract PC thresholds back
+into the physical time domain, creating a visual <strong>“envelope” or
+“tube.”</strong> If a future movement curve stays completely within this
+tube, it is statistically guaranteed to be consistent with that specific
+activity.</p>
+<p>Finally, to ensure our <strong>theoretical guarantees</strong> hold
+up in practice, we check if 90% of our actual “Walking” data falls
+within the constructed “Walking” band and verify if “Running” data
+correctly falls outside that very same “Walking” band.</p>
 <div class="sourceCode" id="cb8"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" tabindex="-1"></a>activities <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="st">&quot;Sedentary&quot;</span>, <span class="st">&quot;Walking&quot;</span>, <span class="st">&quot;Running&quot;</span>)</span>
 <span id="cb8-2"><a href="#cb8-2" tabindex="-1"></a>conf_alpha <span class="ot">&lt;-</span> <span class="fl">0.10</span></span>
 <span id="cb8-3"><a href="#cb8-3" tabindex="-1"></a></span>
@@ -710,26 +735,29 @@ very same “Walking” band.</p>
 </div>
 <div id="conformal-vis." class="section level3">
 <h3>Conformal Vis.</h3>
-<p>Here we visualize the boundaries of “normal” behavior for each
-activity and the actual visual proof of our conformal prediction.
-model.</p>
+<p>Here we visualize the <strong>boundaries of “normal”
+behavior</strong> for each activity and the actual visual proof of our
+<strong>conformal prediction model</strong>.</p>
 <p>To illustrate these boundaries, our first key visualization is the
-Time-Domain Conformal Bands plot. This translates the abstract
-ellipsoidal math back into the physical world. Specifically, it plots
-the 90% confidence “tube” (ribbon) over time for each activity. The
-practical application here is straightforward: if a new 5-second window
-of movement is recorded, and its curve fits completely inside the
-“Walking” tube, the model confidently classifies it as walking.</p>
-<p>While the first plot focuses on the temporal aspect, the Global
-Latent Space Ellipsoids plot provides a broader, structural perspective.
-Instead of looking at curves over time, this plot zooms out and examines
-the overall mathematical separation of the activities. To achieve this,
-it runs a global Functional PCA to compress all curves into just two
-principal variables (PC1 and PC2). Finally, it plots every single
-5-second window as a dot, drawing 90% confidence boundaries (ellipses)
-around the clusters to clearly demonstrate how well the Sedentary,
-Walking, and Running states separate from each other in the latent
-space.</p>
+<strong>Time-Domain Conformal Bands plot</strong> . This translates the
+<strong>abstract ellipsoidal math</strong> back into the physical world.
+Specifically, it plots the <strong>90% confidence “tube”
+(ribbon)</strong> over time for each activity. The practical application
+here is straightforward: if a new 5-second window of movement is
+recorded, and its curve fits completely inside the <strong>“Walking”
+tube</strong>, the model confidently classifies it as walking.</p>
+<p>While the first plot focuses on the temporal aspect, the
+<strong>Global Latent Space Ellipsoids plot</strong> provides a broader,
+<strong>structural perspective</strong>. Instead of looking at curves
+over time, this plot zooms out and examines the overall
+<strong>mathematical separation</strong> of the activities. To achieve
+this, it runs a <strong>global Functional PCA</strong> to compress all
+curves into just two <strong>principal variables (PC1 and PC2)</strong>.
+Finally, it plots every single 5-second window as a dot, drawing
+<strong>90% confidence boundaries (ellipses)</strong> around the
+clusters to clearly demonstrate how well the Sedentary, Walking, and
+Running states <strong>separate from each other</strong> in the
+<strong>latent space</strong>.</p>
 <div class="sourceCode" id="cb21"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb21-1"><a href="#cb21-1" tabindex="-1"></a><span class="cf">if</span> (<span class="fu">nrow</span>(df_bands_all) <span class="sc">==</span> <span class="dv">0</span>) { </span>
 <span id="cb21-2"><a href="#cb21-2" tabindex="-1"></a>  <span class="fu">cat</span>(<span class="st">&quot;</span><span class="sc">\n</span><span class="st">[ERROR] No data was generated for the bands&quot;</span>)</span>
 <span id="cb21-3"><a href="#cb21-3" tabindex="-1"></a>} <span class="cf">else</span> {</span>
