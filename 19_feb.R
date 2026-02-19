@@ -96,6 +96,7 @@ df_aligned$Activity <- cut(roll_var,
 act_smooth <- runmed(as.integer(df_aligned$Activity), k = round(1/dt)+1)
 df_aligned$Activity <- factor(act_smooth, levels=1:3, labels=c("Sedentary", "Walking", "Running"))
 
+
 # =============================
 # 3. FDA EXPLORATION (HOMEWORK STEP 2)
 # =============================
@@ -108,13 +109,23 @@ n_windows <- floor(nrow(df_aligned) / pts_per_window)
 trunc_len <- n_windows * pts_per_window
 
 acc_matrix <- matrix(df_aligned$SmoothMag[1:trunc_len], nrow = pts_per_window, ncol = n_windows)
-
-get_mode <- function(v) {
-  uniqv <- unique(na.omit(v))
-  uniqv[which.max(tabulate(match(v, uniqv)))]
-}
 activity_matrix <- matrix(as.character(df_aligned$Activity[1:trunc_len]), nrow=pts_per_window)
-window_labels <- factor(apply(activity_matrix, 2, get_mode), levels=c("Sedentary", "Walking", "Running"))
+
+get_majority_label <- function(v) {
+  tab <- table(v)
+  lab <- names(tab)[which.max(tab)]
+  prop <- max(tab) / sum(tab)
+  c(label = lab, prop = prop)
+}
+
+# Filter for pure activity windows
+maj_stats <- apply(activity_matrix, 2, get_majority_label)
+maj_labels <- maj_stats["label", ]
+maj_props  <- as.numeric(maj_stats["prop", ])
+
+keep <- maj_props >= 0.8  # Keep windows that are at least 80% one activity
+acc_matrix <- acc_matrix[, keep, drop = FALSE]
+window_labels <- factor(maj_labels[keep], levels = c("Sedentary","Walking","Running"))
 
 # Create FDA Object
 window_time <- seq(0, window_duration, length.out = pts_per_window)
