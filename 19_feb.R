@@ -132,28 +132,69 @@ window_time <- seq(0, window_duration, length.out = pts_per_window)
 fda_basis <- create.bspline.basis(rangeval = c(0, window_duration), nbasis = 15, norder = 4)
 acc_fd <- Data2fd(window_time, acc_matrix, fda_basis)
 
-# Plot 3.1: Spaghetti Plot (Original)
-col_map <- c("Sedentary" = "#377eb8", "Walking" = "#4daf4a", "Running" = "#e41a1c")
-plot(acc_fd, col = col_map[window_labels], lty = 1, lwd = 0.5,
-     main = "FDA: 5-Second Acceleration Windows", xlab = "Time (s)", ylab = "Acc (m/s^2)")
-legend("topright", legend = names(col_map), col = col_map, lwd = 2)
+# =========================================================
+# Plot 3.1: Spaghetti Plot (Separated 1x3 Grid)
+# =========================================================
+# Find global y-axis limits so all 3 plots share the same scale
+plot_grid_eval <- seq(0, window_duration, length.out = 100)
+ylim_acc <- range(eval.fd(plot_grid_eval, acc_fd))
 
-# Plot 3.2: 1st Derivative (Jerk Analysis) (Original)
+par(mfrow = c(1, 3)) # Set up 1x3 grid
+for(act in c("Sedentary", "Walking", "Running")) {
+  idx <- which(window_labels == act)
+  if(length(idx) > 0) {
+    plot(acc_fd[idx], col = col_map[act], lty = 1, lwd = 0.5,
+         main = paste("Acceleration:", act), 
+         xlab = "Time (s)", ylab = "Acc (m/s^2)",
+         ylim = ylim_acc) # Force shared y-axis
+  } else {
+    plot.new()
+    title(main = paste(act, "- No Data"))
+  }
+}
+mtext("FDA: 5-Second Acceleration Windows", side = 3, line = -2, outer = TRUE, font = 2)
+par(mfrow = c(1, 1)) # Reset layout
+
+
+# =========================================================
+# Plot 3.2: 1st Derivative / Jerk Analysis (Separated 1x3 Grid)
+# =========================================================
 acc_deriv_fd <- deriv.fd(acc_fd, 1)
-plot(acc_deriv_fd, col = col_map[window_labels], lwd = 0.5,
-     main = "FDA Dedicated Plot: 1st Derivative (Jerk)", xlab = "Time (s)", ylab = "Jerk (m/s^3)")
-legend("topright", legend = names(col_map), col = col_map, lwd = 2)
 
-# Plot 3.3: Unified Functional Means (NEW)
+# Find global y-axis limits for the derivative
+ylim_jerk <- range(eval.fd(plot_grid_eval, acc_deriv_fd))
+
+par(mfrow = c(1, 3)) # Set up 1x3 grid
+for(act in c("Sedentary", "Walking", "Running")) {
+  idx <- which(window_labels == act)
+  if(length(idx) > 0) {
+    plot(acc_deriv_fd[idx], col = col_map[act], lwd = 0.5,
+         main = paste("Jerk:", act), 
+         xlab = "Time (s)", ylab = "Jerk (m/s^3)",
+         ylim = ylim_jerk) # Force shared y-axis
+  } else {
+    plot.new()
+    title(main = paste(act, "- No Data"))
+  }
+}
+mtext("FDA Dedicated Plot: 1st Derivative (Jerk)", side = 3, line = -2, outer = TRUE, font = 2)
+par(mfrow = c(1, 1)) # Reset layout
+
+
+# Plot 3.3: Unified Functional Means (NEW) - CORRECTED
 plot_grid <- seq(0, window_duration, length.out = 100)
 eval_acc <- eval.fd(plot_grid, acc_fd)
 
 df_eval <- as.data.frame(eval_acc)
+# Force consistent column names just to be safe
+colnames(df_eval) <- paste0("Curve_", 1:ncol(df_eval))
 df_eval$Time <- plot_grid
+
 df_melt <- melt(df_eval, id.vars = "Time", variable.name = "Window", value.name = "Acc")
-# Map labels back
-window_label_map <- setNames(window_labels, paste0("X", 1:length(window_labels)))
-df_melt$Activity <- window_label_map[as.character(df_melt$Window)]
+
+# Because melt stacks curve 1, then curve 2, etc., we can assign labels directly
+# by repeating each label exactly 'length(plot_grid)' times (100 times)
+df_melt$Activity <- rep(window_labels, each = length(plot_grid))
 
 df_summary <- df_melt %>%
   group_by(Time, Activity) %>%
@@ -161,8 +202,7 @@ df_summary <- df_melt %>%
     Mean_Acc = mean(Acc, na.rm = TRUE),
     SD_Acc = sd(Acc, na.rm = TRUE),
     .groups = "drop"
-  ) %>%
-  filter(!is.na(Activity))
+  )
 
 p_means <- ggplot(df_summary, aes(x = Time, y = Mean_Acc, color = Activity, fill = Activity)) +
   geom_line(linewidth = 1.2) +
@@ -173,18 +213,21 @@ p_means <- ggplot(df_summary, aes(x = Time, y = Mean_Acc, color = Activity, fill
        subtitle = "Solid line: Mean | Shaded area: ±1 Standard Deviation",
        x = "Time (s)", y = expression("Acceleration Magnitude " (m/s^2))) +
   theme_minimal()
+
 print(p_means)
 
-# Plot 3.4: Functional Boxplots (NEW)
-par(mfrow = c(1, 3))
+# Plot 3.4: Functional Boxplots
+par(mfrow = c(1, 3)) # Set up 3-panel plot
 for(act in c("Sedentary", "Walking", "Running")) {
   idx <- which(window_labels == act)
   if(length(idx) > 5) {
+    # FIX: Added 'xlim = range(plot_grid)' to force the correct x-axis scale (0-5s)
     fbplot(eval_acc[, idx], plot_grid, main=paste("Functional Boxplot:", act),
-           xlab="Time (s)", ylab="Acc", color=col_map[act], barcol="black")
+           xlab="Time (s)", ylab="Acc", color=col_map[act], barcol="black",
+           xlim = range(plot_grid)) 
   }
 }
-par(mfrow = c(1, 1))
+par(mfrow = c(1, 1)) # Reset plotting layout
 
 # =============================
 # 4. MULTI-CLASS CONFORMAL PREDICTION
