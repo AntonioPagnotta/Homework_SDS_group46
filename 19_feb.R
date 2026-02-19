@@ -132,20 +132,62 @@ window_time <- seq(0, window_duration, length.out = pts_per_window)
 fda_basis <- create.bspline.basis(rangeval = c(0, window_duration), nbasis = 15, norder = 4)
 acc_fd <- Data2fd(window_time, acc_matrix, fda_basis)
 
-# Plot 3.1: Spaghetti Plot
+# Plot 3.1: Spaghetti Plot (Original)
 col_map <- c("Sedentary" = "#377eb8", "Walking" = "#4daf4a", "Running" = "#e41a1c")
 plot(acc_fd, col = col_map[window_labels], lty = 1, lwd = 0.5,
      main = "FDA: 5-Second Acceleration Windows", xlab = "Time (s)", ylab = "Acc (m/s^2)")
 legend("topright", legend = names(col_map), col = col_map, lwd = 2)
 
-# Plot 3.2: 1st Derivative (Jerk Analysis)
+# Plot 3.2: 1st Derivative (Jerk Analysis) (Original)
 acc_deriv_fd <- deriv.fd(acc_fd, 1)
 plot(acc_deriv_fd, col = col_map[window_labels], lwd = 0.5,
      main = "FDA Dedicated Plot: 1st Derivative (Jerk)", xlab = "Time (s)", ylab = "Jerk (m/s^3)")
 legend("topright", legend = names(col_map), col = col_map, lwd = 2)
 
+# Plot 3.3: Unified Functional Means (NEW)
+plot_grid <- seq(0, window_duration, length.out = 100)
+eval_acc <- eval.fd(plot_grid, acc_fd)
+
+df_eval <- as.data.frame(eval_acc)
+df_eval$Time <- plot_grid
+df_melt <- melt(df_eval, id.vars = "Time", variable.name = "Window", value.name = "Acc")
+# Map labels back
+window_label_map <- setNames(window_labels, paste0("X", 1:length(window_labels)))
+df_melt$Activity <- window_label_map[as.character(df_melt$Window)]
+
+df_summary <- df_melt %>%
+  group_by(Time, Activity) %>%
+  summarise(
+    Mean_Acc = mean(Acc, na.rm = TRUE),
+    SD_Acc = sd(Acc, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(Activity))
+
+p_means <- ggplot(df_summary, aes(x = Time, y = Mean_Acc, color = Activity, fill = Activity)) +
+  geom_line(linewidth = 1.2) +
+  geom_ribbon(aes(ymin = Mean_Acc - SD_Acc, ymax = Mean_Acc + SD_Acc), alpha = 0.2, color = NA) +
+  scale_color_manual(values = col_map) +
+  scale_fill_manual(values = col_map) +
+  labs(title = "Functional Means & Variance by Activity",
+       subtitle = "Solid line: Mean | Shaded area: ±1 Standard Deviation",
+       x = "Time (s)", y = expression("Acceleration Magnitude " (m/s^2))) +
+  theme_minimal()
+print(p_means)
+
+# Plot 3.4: Functional Boxplots (NEW)
+par(mfrow = c(1, 3))
+for(act in c("Sedentary", "Walking", "Running")) {
+  idx <- which(window_labels == act)
+  if(length(idx) > 5) {
+    fbplot(eval_acc[, idx], plot_grid, main=paste("Functional Boxplot:", act),
+           xlab="Time (s)", ylab="Acc", color=col_map[act], barcol="black")
+  }
+}
+par(mfrow = c(1, 1))
+
 # =============================
-# 4. MULTI-CLASS CONFORMAL PREDICTION (HOMEWORK STEP 3)
+# 4. MULTI-CLASS CONFORMAL PREDICTION
 #    Following Section 3.1: Gaussian Mixture Approximation Components
 # =============================
 cat("\n=== STEP 4: MULTI-CLASS CONFORMAL PREDICTION (FPCA + ELLIPSOID) ===\n")
@@ -201,6 +243,13 @@ for(act in activities) {
   if (is.na(p_keep)) p_keep <- nharm_max
   cat(sprintf("  Using %d PCs (explains %.1f%% var)\n", p_keep, cumvar[p_keep]*100))
   
+  # Plot 4.2.1: FPCA Harmonics Plot (NEW)
+  par(mfrow = c(1, min(2, p_keep)))
+  plot.pca.fd(pca_act, nx = 100, pointplot = TRUE, harm = 1:min(2, p_keep),
+              expand = 0, cycle = FALSE)
+  mtext(paste("FPCA Perturbations:", act), side = 3, line = -2, outer = TRUE, font = 2)
+  par(mfrow = c(1, 1))
+  
   # 4.3 Define conformity scores (Mahalanobis distance)
   scores_train <- pca_act$scores[, 1:p_keep, drop = FALSE]
   mu_scores    <- colMeans(scores_train)
@@ -218,7 +267,7 @@ for(act in activities) {
   
   # 1) Empirical coverage for this activity (calibration windows)
   coverage_act <- mean(d2_calib <= q_hat)
-  cat(sprintf(" Empirical coverage for %s (should be ≈ %.2f): %.3f\n",
+  cat(sprintf("  Empirical coverage for %s (should be ≈ %.2f): %.3f\n",
               act, 1 - conf_alpha, coverage_act))
   
   # 2) Detection: how often do other-activity windows fall OUTSIDE this band's ellipsoid?
@@ -239,7 +288,7 @@ for(act in activities) {
                             cov    = Sigma_scores)
     
     detection_other <- mean(d2_other > q_hat)
-    cat(sprintf(" Detection of non-%s windows (d2 > q_hat): %.3f\n",
+    cat(sprintf("  Detection of non-%s windows (d2 > q_hat): %.3f\n",
                 act, detection_other))
   } else {
     detection_other <- NA
@@ -250,7 +299,38 @@ for(act in activities) {
                             data.frame(Activity = act,
                                        Coverage = coverage_act,
                                        Detection_Other = detection_other))
+  # Identify outliers for this class in score space
+  is_outlier <- d2_calib > q_hat  # or use a higher cutoff like quantile(d2_calib, 0.99)
+  cat(sprintf("  Found %d outliers in %s calibration set.\n",
+              sum(is_outlier), act))
   
+  # Build a data frame with first two PCs for calibration windows (Safe for 1D)
+  if (ncol(scores_calib) >= 2) {
+    pc1_vals <- scores_calib[, 1]
+    pc2_vals <- scores_calib[, 2]
+  } else {
+    pc1_vals <- scores_calib[, 1]
+    pc2_vals <- rep(0, length(pc1_vals)) # Pad with 0s if only 1 PC is kept
+  }
+  
+  df_scores_calib <- data.frame(
+    PC1 = pc1_vals,
+    PC2 = pc2_vals,
+    Outlier = factor(ifelse(is_outlier, "Outlier", "Inlier"),
+                     levels = c("Inlier", "Outlier"))
+  )
+  
+  # Plot 4.4.1: Outlier Plot (Original)
+  p_out <- ggplot(df_scores_calib, aes(x = PC1, y = PC2, color = Outlier)) +
+    geom_point(size = 2, alpha = 0.8) +
+    scale_color_manual(values = c(Inlier = "grey60", Outlier = "red")) +
+    labs(title = sprintf("FPCA Scores for %s (Calibration)", act),
+         subtitle = "Outliers defined by Mahalanobis distance > q_hat",
+         x = "PC1 score", y = "PC2 score") +
+    theme_minimal() +
+    theme(legend.position = "top")
+  
+  print(p_out)
   
   # 4.5 Build Prediction Band for Time Domain Plotting
   phi_mat   <- eval.fd(grid_eval, pca_act$harmonics[1:p_keep])
@@ -307,9 +387,7 @@ if (nrow(df_bands_all) == 0) {
   df_bands_all$Activity <- factor(df_bands_all$Activity, levels = activities)
   df_proj_all$Activity <- factor(df_proj_all$Activity, levels = activities)
   
-  # Define distinct colors for the activities to make them pop
-  act_colors <- c("Sedentary" = "#377eb8", "Walking" = "#4daf4a", "Running" = "#e41a1c")
-  
+  # Plot 5.1: Conformal Bands (Original)
   p_bands_multi <- ggplot() +
     # Draw the Conformal Bands
     geom_ribbon(data = df_bands_all, aes(x = t, ymin = lower, ymax = upper, fill = Activity), alpha = 0.3) +
@@ -319,8 +397,8 @@ if (nrow(df_bands_all) == 0) {
     geom_line(data = df_bands_all, aes(x = t, y = center), color = "black", linewidth = 0.8, linetype = "dashed") +
     # Formatting
     facet_wrap(~Activity, scales = "free_y") + 
-    scale_fill_manual(values = act_colors) +
-    scale_color_manual(values = act_colors) +
+    scale_fill_manual(values = col_map) +
+    scale_color_manual(values = col_map) +
     labs(title = "Conformal Prediction Bands for All Activities (90% Coverage)",
          subtitle = "Gaussian Mixture Components: Projections from FPCA Mahalanobis Ellipsoids",
          x = "Relative Time (seconds)", y = "Acceleration Magnitude") +
@@ -330,5 +408,27 @@ if (nrow(df_bands_all) == 0) {
           strip.text = element_text(face="bold", size=12))
   
   print(p_bands_multi)
+  
+  # Plot 5.2: Global Latent Space Conformal Ellipsoids (NEW)
+  pca_global <- pca.fd(acc_fd, nharm = 2)
+  df_latent <- data.frame(
+    PC1 = pca_global$scores[, 1],
+    PC2 = pca_global$scores[, 2],
+    Activity = window_labels
+  )
+  
+  p_latent <- ggplot(df_latent, aes(x = PC1, y = PC2, color = Activity)) +
+    geom_point(alpha = 0.6, size = 1.5) +
+    stat_ellipse(type = "norm", level = 1 - conf_alpha, linewidth = 1.2, aes(fill = Activity), geom = "polygon", alpha = 0.1) +
+    scale_color_manual(values = col_map) +
+    scale_fill_manual(values = col_map) +
+    labs(title = "Latent Space Conformal Regions (90% Coverage)",
+         subtitle = "Global PC1 vs PC2 Scores with Gaussian Ellipsoids",
+         x = "Principal Component 1", y = "Principal Component 2") +
+    theme_bw() +
+    theme(legend.position = "bottom")
+  
+  print(p_latent)
+  
   cat("\nAnalysis Complete. Multi-class prediction bands generated successfully!\n")
 }
