@@ -162,6 +162,13 @@ grid_eval <- seq(0, window_duration, length.out = 100)
 cat("\nCurrent distribution of functional windows:\n")
 print(table(window_labels, useNA = "always"))
 
+coverage_results <- data.frame(
+  Activity = character(),
+  Coverage = numeric(),
+  Detection_Other = numeric(),
+  stringsAsFactors = FALSE
+)
+
 for(act in activities) {
   cat(sprintf("\n--- Processing Class: %s ---\n", act))
   
@@ -209,6 +216,42 @@ for(act in activities) {
   q_hat <- as.numeric(quantile(d2_calib, probs = 1 - conf_alpha, type = 1))
   cat(sprintf("  Ellipsoidal Threshold (q_hat): %.3f\n", q_hat))
   
+  # 1) Empirical coverage for this activity (calibration windows)
+  coverage_act <- mean(d2_calib <= q_hat)
+  cat(sprintf(" Empirical coverage for %s (should be ≈ %.2f): %.3f\n",
+              act, 1 - conf_alpha, coverage_act))
+  
+  # 2) Detection: how often do other-activity windows fall OUTSIDE this band's ellipsoid?
+  
+  # All other windows from acc_fd with labels != act
+  idx_other_global <- which(window_labels != act)
+  if (length(idx_other_global) > 0) {
+    fd_other <- acc_fd[idx_other_global]
+    
+    # Project other windows into this class's PC space
+    scores_other <- inprod(fd_other, pca_act$harmonics[1:p_keep])
+    if (is.vector(scores_other)) {
+      scores_other <- matrix(scores_other, ncol = p_keep, byrow = TRUE)
+    }
+    
+    d2_other <- mahalanobis(scores_other,
+                            center = mu_scores,
+                            cov    = Sigma_scores)
+    
+    detection_other <- mean(d2_other > q_hat)
+    cat(sprintf(" Detection of non-%s windows (d2 > q_hat): %.3f\n",
+                act, detection_other))
+  } else {
+    detection_other <- NA
+  }
+  
+  # Store results
+  coverage_results <- rbind(coverage_results,
+                            data.frame(Activity = act,
+                                       Coverage = coverage_act,
+                                       Detection_Other = detection_other))
+  
+  
   # 4.5 Build Prediction Band for Time Domain Plotting
   phi_mat   <- eval.fd(grid_eval, pca_act$harmonics[1:p_keep])
   mean_vec  <- as.vector(eval.fd(grid_eval, pca_act$meanfd))
@@ -247,6 +290,9 @@ for(act in activities) {
     curve = rep(paste0(act, "_", 1:ncol(proj_calib)), each = length(grid_eval))
   ))
 }
+
+cat("\n=== SUMMARY: COVERAGE & DETECTION ===\n")
+print(coverage_results)
 
 # =============================
 # 5. CONFORMAL VISUALIZATION (3-PANEL)
