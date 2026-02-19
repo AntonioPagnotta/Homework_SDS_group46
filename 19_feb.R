@@ -181,42 +181,7 @@ mtext("FDA Dedicated Plot: 1st Derivative (Jerk)", side = 3, line = -2, outer = 
 par(mfrow = c(1, 1)) # Reset layout
 
 
-# Plot 3.3: Unified Functional Means (NEW) - CORRECTED
-plot_grid <- seq(0, window_duration, length.out = 100)
-eval_acc <- eval.fd(plot_grid, acc_fd)
-
-df_eval <- as.data.frame(eval_acc)
-# Force consistent column names just to be safe
-colnames(df_eval) <- paste0("Curve_", 1:ncol(df_eval))
-df_eval$Time <- plot_grid
-
-df_melt <- melt(df_eval, id.vars = "Time", variable.name = "Window", value.name = "Acc")
-
-# Because melt stacks curve 1, then curve 2, etc., we can assign labels directly
-# by repeating each label exactly 'length(plot_grid)' times (100 times)
-df_melt$Activity <- rep(window_labels, each = length(plot_grid))
-
-df_summary <- df_melt %>%
-  group_by(Time, Activity) %>%
-  summarise(
-    Mean_Acc = mean(Acc, na.rm = TRUE),
-    SD_Acc = sd(Acc, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-p_means <- ggplot(df_summary, aes(x = Time, y = Mean_Acc, color = Activity, fill = Activity)) +
-  geom_line(linewidth = 1.2) +
-  geom_ribbon(aes(ymin = Mean_Acc - SD_Acc, ymax = Mean_Acc + SD_Acc), alpha = 0.2, color = NA) +
-  scale_color_manual(values = col_map) +
-  scale_fill_manual(values = col_map) +
-  labs(title = "Functional Means & Variance by Activity",
-       subtitle = "Solid line: Mean | Shaded area: ±1 Standard Deviation",
-       x = "Time (s)", y = expression("Acceleration Magnitude " (m/s^2))) +
-  theme_minimal()
-
-print(p_means)
-
-# Plot 3.4: Functional Boxplots
+# Plot 3.3: Functional Boxplots
 par(mfrow = c(1, 3)) # Set up 3-panel plot
 for(act in c("Sedentary", "Walking", "Running")) {
   idx <- which(window_labels == act)
@@ -472,6 +437,4 @@ if (nrow(df_bands_all) == 0) {
     theme(legend.position = "bottom")
   
   print(p_latent)
-  
-  cat("\nAnalysis Complete. Multi-class prediction bands generated successfully!\n")
 }
