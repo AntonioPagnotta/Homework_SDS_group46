@@ -1,5 +1,5 @@
 ---
-title: "Homework Solution"
+title: "Conformal Prediction for Smartphone Telemetry"
 author: "Group 46"
 output:
   prettydoc::html_pretty:
@@ -7,11 +7,11 @@ output:
     highlight: github
 ---
 
-### Introduction
+## Abstract
 
-Our work presents a comprehensive framework leveraging **Functional Data Analysis (FDA)** and **Conformal Prediction** to objectively classify **human physical activity**—specifically **Sedentary**, **Walking**, and **Running** states—using asynchronous **smartphone sensor telemetry**. To transition from raw, noisy multi-sensor data to a reliable analytical foundation, the pipeline first **synchronizes** all readings onto a **universal 10Hz grid** and isolates the rotation-invariant **linear acceleration magnitude**. Rather than relying on rigid, pre-assigned experimental labels that might ignore human micro-variations, the subject's **true physical state** is dynamically **segmented** using **B-spline smoothing** and **K-Means clustering** applied to a **5-second rolling variance**.
+Our work focus on leveraging **Functional Data Analysis (FDA)** and **Conformal Prediction** to objectively classify **human physical activity**,specifically **Sedentary**, **Walking**, and **Running** states,using asynchronous **smartphone sensor telemetry**. To transition from raw, noisy multi sensor data to a reliable analytical foundation, the pipeline first **synchronizes** all readings onto a **universal 10Hz grid** and isolates the rotation invariant **linear acceleration magnitude**. Rather than relying on rigid, preassigned experimental labels that might ignore human micro variations, the subject's **true physical state** is dynamically **segmented** using **B-spline smoothing** and **K-Means clustering** applied to a **5 second rolling variance**.
 
-With the data cleanly partitioned and filtered for purity, the analysis shifts to an FDA approach, treating 5-second epochs as **continuous mathematical curves** to extract distinct **biomechanical signatures**. By evaluating **functional means**, **variance**, and the first derivative of acceleration (**Jerk**), we establish a clear **structural understanding** of each movement type. Building upon these functional representations, we subsequently apply a Conformal Prediction framework utilizing **Functional Principal Component Analysis (FPCA)** and **Mahalanobis distances** to establish rigorous, **distribution-free boundaries** for normal behavior. By constructing **90% confidence ellipsoids** in the **latent space** and translating them into **time-domain prediction bands**, the model successfully hits its **empirical coverage targets** across all activities. Ultimately, this geometric evaluation reveals that **low-energy activities** (like resting) generate **tightly constrained regions** capable of perfectly isolating micro-movements and **rejecting over 93% of anomalies**, whereas **higher-energy activities** naturally form **larger, more encompassing ellipsoids** due to their intrinsic **biomechanical variance**.
+With the data cleanly partitioned and filtered for purity, the analysis shifts to an FDA approach, treating 5 second epochs as **continuous mathematical curves** to extract distinct **biomechanical signatures**. By evaluating **functional means**, **variance**, and the first derivative of acceleration (**Jerk**), we establish a clear **structural understanding** of each movement type. Building upon these functional representations, we subsequently apply a Conformal Prediction framework utilizing **Functional Principal Component Analysis (FPCA)** and **Mahalanobis distances** to establish, **distribution free boundaries** for normal behavior. By constructing **90% confidence ellipsoids** in the **latent space** and translating them into **time domain prediction bands**, the model successfully hits its **empirical coverage targets** across all activities. Ultimately, this geometric evaluation reveals that **low energy activities** (like resting) generate **tightly constrained regions** capable of perfectly isolating micro movements and **rejecting over 93% of anomalies**, whereas **higher energy activities** naturally form **larger, more encompassing ellipsoids** due to their intrinsic **biomechanical variance**.
 
 
 ```{r setup, include=FALSE}
@@ -31,7 +31,7 @@ col_map <- c("Sedentary" = "#2E86AB", "Walking"   = "#A23B72", "Running"   = "#F
 
 Once obtained the data, first thing we do is transform the **raw, asynchronously recorded sensor data**, into a **clean, synchronized, and evenly spaced dataset**. Our dataset contains high-dimensional telemetry from multiple sources, including **Compass, Ambient Light, and Magnetic Rotation sensors**. By a quick look at the data, we noticed that the sensors rarely recorded their read value at the exact same millisecond, so this pipeline forces all sensor readings, regardless of their type, onto a **shared timeline** so they can be accurately compared and analyzed row by row.
 
-In order to do this, we first order the raw data by timestamp and converts **absolute time** (milliseconds) into a **relative, easy to read scale** starting at exactly 0; established a universal **10Hz sampling rate**, creating a target timeline with exactly one row every **0.1 seconds**. While we keep the full sensor suite synchronized for a complete record, we primarily target the **Accelerometer** data for the core of our analysis. We used the **`zoo` package** to calculate missing values. In this way, if a sensor didn't record a value at an exact 0.1s interval, the script **mathematically estimates** it by drawing a **straight line** between the nearest surrounding data points.
+In order to do this, we first order the raw data by timestamp and converts **absolute time** (milliseconds) into a **relative, easy to read scale** starting at exactly 0, establishing a universal **10Hz sampling rate** and creating a target timeline with exactly one row every **0.1 seconds**. While we keep the full sensor suite synchronized for a complete record, we primarily target the **Linear Accelerometer** data for the core of our analysis. We used the **`zoo` package** to calculate missing values. In this way, if a sensor didn't record a value at an exact 0.1s interval, the script **mathematically estimates** it by drawing a **straight line** between the nearest surrounding data points.
 
 ```{r preprocessing}
 df_raw <- read.csv("dati_sgravati (1).csv")
@@ -62,17 +62,17 @@ for (s in sensor_cols) {
 
 ### B-Spline Smoothing and Segmentation
 
-In our experimental setup, the subject was instructed to first run, then remain sedentary, and finally walk. However, real human movement is rarely perfectly constant. During the "running" interval, the subject might have briefly stopped to catch their breath (sedentary) or slowed down (walking). If we simply **hard-coded** the entire first time block as "Running," we would inadvertently label standing still as a "run," corrupting all our subsequent **functional data analysis**. To solve this, we built a pipeline to objectively extract the **true physical state** at any given moment, rather than relying on what the subject was supposed to be doing.
+In our experimental setup, the subject was instructed to first run, then remain sedentary, and finally walk. However, real human movement is rarely perfectly constant. During the "Running" interval, the subject might have briefly stopped to catch their breath (sedentary) or slowed down (walking). If we simply **hard coded** the entire first time block as "Running," we would inadvertently label standing still as a "run," corrupting all our subsequent **functional data analysis**. To solve this, we built a pipeline to objectively extract the **true physical state** at any given moment, rather than relying on what the subject was supposed to be doing.
 
-To initiate this process, we first had to standardize the raw sensor data. Although our hardware captures rotation and orientation (via the **Magnetic Rotation** and **Compass** sensors), we have elected to use **Linear Acceleration Magnitude** as our primary analytical feature to ensure **rotation invariance**. Because a smartphone or sensor can twist and bounce in a pocket (making its orientation unreliable), we collapsed these directional vectors (X, Y, and Z) into a single, **direction-agnostic "intensity" value**.
+To initiate this process, we first had to standardize the raw sensor data. Although our hardware captures rotation and orientation (via the **Magnetic Rotation** and **Compass** sensors), we have elected to use **Linear Acceleration Magnitude** as our primary analytical feature to ensure **rotation invariance**.
 
-Next, to filter out the **high-frequency hardware jitter**, we fit a **continuous mathematical B-spline curve** through the data. As a practical measure to prevent the system from crashing, this smoothing was applied **iteratively in chunks**. Once we had this clean signal, we calculated how much the movement fluctuated over a **rolling 5 second window**, operating on the premise that **high variance** indicates intense movement, while **near-zero variance** indicates stillness.
+Next, to filter out the **high frequency hardware jitter**, we fit a **continuous mathematical B-spline curve** through the data. As a practical measure to prevent the system from crashing, this smoothing was applied **iteratively in chunks**. Once we had this clean signal, we calculated how much the movement fluctuated over a **rolling 5 second window**, operating on the premise that **high variance** indicates intense movement, while **near zero variance** indicates stillness.
 
-This variance metric is exactly where we account for the **micro-variations** in the user's actual behavior. By applying **K-Means clustering** to our rolling variance, we automatically found the **three true intensity clusters** hidden inside the data. This means if the subject stopped for 10 seconds during the planned "Running" phase, K-Means **organically detected** the drop in variance and correctly reassigned those specific seconds to "Sedentary." 
+This variance metric is exactly where we account for the **micro variations** in the user's actual behavior. By applying **K-Means clustering** to our rolling variance, we automatically found the **three true intensity clusters** hidden inside the data. This means if the subject stopped for 10 seconds during the planned "Running" phase, K-Means **organically detected** the drop in variance and correctly reassigned those specific seconds to "Sedentary." 
 
-Crucially, because this K-Means pre-segmentation successfully divides our data into distinct, homogeneous classes, the resulting distribution of each class's features is intrinsically unimodal. This strategic step makes the subsequent application of a Gaussian Mixture Model (GMM) computationally redundant, streamlining our pipeline without sacrificing any statistical rigor.
+Crucially, because this K-Means pre segmentation successfully divides our data into distinct, homogeneous classes, the resulting distribution of each class's features is intrinsically unimodal. This strategic step makes the subsequent application of a Gaussian Mixture Model computationally redundant, opting for a Single Multivariate Gaussian.
 
-Finally, as a last quality-control step, we applied **Label Filtering**. We ran a **median filter** over the K-Means output labels to iron out **physical impossibilities**. For example, if the model classified a single 0.1-second frame as "Running" sandwiched between continuous seconds of "Sedentary," the filter smoothed it out, ensuring our final activity blocks made **chronological and physical sense**.
+Finally, as a last quality control step, we applied **Label Filtering**. We ran a **median filter** over the K-Means output labels to iron out **physical impossibilities**. For example, if the model classified a single 0.1 second frame as "Running" sandwiched between continuous seconds of "Sedentary," the filter smoothed it out, ensuring our final activity blocks made **chronological and physical sense**.
 
 ```{r B-SPLINE}
 # Smooth Acceleration magnitude to remove high-frequency jitter
@@ -114,7 +114,7 @@ thresh2 <- exp(mean(centers_sorted[2:3]))
 df_aligned$Activity <- cut(roll_var, breaks = c(-Inf, thresh1, thresh2, Inf),
                            labels = c("Sedentary", "Walking", "Running"))
 
-# Clean labels with median filter to remove micro-glitches
+# Clean labels with median filter to remove micro glitches
 act_smooth <- runmed(as.integer(df_aligned$Activity), k = round(1/dt)+1)
 df_aligned$Activity <- factor(act_smooth, levels=1:3,
                               labels=c("Sedentary", "Walking", "Running"))
@@ -122,7 +122,7 @@ df_aligned$Activity <- factor(act_smooth, levels=1:3,
 
 ### FDA Exploration
 
-Here we shift from standard row-by-row data manipulation into **Functional Data Analysis (FDA)**. Instead of analyzing thousands of individual data points, we treat the chunks of time (**5 second windows**) as a **single, continuous mathematical curve** and by analyzing the shape of these curves, extract the true **physical "signatures"** of different activities.
+Here we shift from standard row by row data manipulation into **Functional Data Analysis (FDA)**. Instead of analyzing thousands of individual data points, we treat the chunks of time (**5 second windows**) as a **single, continuous mathematical curve** and by analyzing the shape of these curves, extract the true **physical "signatures"** of different activities.
 
 To prepare the data for this analysis, we first apply a filtering step to chop the continuous timeline into manageable **5 second epochs**. This is done to filter out "messy" windows (e.g., when the user is actively transitioning from standing to walking), keeping only the windows that are **at least 80% pure** in a single activity. Once these pure epochs are isolated, we proceed to **FDA Object Creation**, which converts the remaining discrete matrices back into **continuous B-spline curves**.
 
@@ -192,7 +192,7 @@ mtext("FDA: 5 second Acceleration Windows", side = 3,
       line = 0, outer = TRUE, font = 2, cex = 1.3)
 ```
 
-In these **5‑second FDA window**s, Sedentary curves is flat near zero, confirming that the segmentation plus the purity filter isolates motionless periods. Walking windows show medium‑level, relatively regular oscillations, representing periodic steps with moderate variability. Running windows populate the entire plot with dense and variable trajectories, reflecting a more heterogeneous impact. Using a common y‑axis across panels makes the intensity ordering clear to visualize.
+In these **5‑second FDA window**s, Sedentary curves is flat near zero, confirming that the segmentation plus the purity filter isolates motionless periods. Walking windows show medium level, relatively regular oscillations, representing periodic steps with moderate variability. Running windows populate the entire plot with dense and variable trajectories, reflecting a more heterogeneous impact. Using a common y‑axis across panels makes the intensity ordering clear to visualize.
 
 
 ```{r FDA_E_2}
@@ -222,7 +222,7 @@ mtext("FDA Derivative Analysis: Jerk (1st Derivative)",
       side = 3, line = 0, outer = TRUE, font = 2, cex = 1.3)
 ```
 
-This **jerk plot** shows how sharply acceleration changes within each 5‑second window. In Sedentary, curves are essentially flat around zero, confirming that the smoothing plus segmentation removed almost all irregular motion. Walking shows small, localized bursts at the end of the window, after a steady smooth motion. Running displays large, frequent oscillations over all the interval, indicating sustained high‑frequency impacts and much more irregular dynamics.
+This **jerk plot** shows how sharply acceleration changes within each 5 second window. In Sedentary, curves are essentially flat around zero, confirming that the smoothing plus segmentation removed almost all irregular motion. Walking shows small, localized bursts at the end of the window, after a steady smooth motion. Running displays large, frequent oscillations over all the interval, indicating sustained high frequency impacts and much more irregular dynamics.
 
 ```{r FDA_E_4}
 
@@ -268,7 +268,7 @@ p_means <- ggplot(df_summary, aes(x = Time, y = Mean_Acc,
 print(p_means)
 ```
 
-This plot summarizes the **average acceleration profile** of each activity and its **variability** over the 5‑second window. Sedentary stays essentially flat near zero confirming almost no movement and very low variance. Walking has the highest mean level and widest band, reflecting greater variability despite moderate intensity. Running is slightly lower in mean and variance indicating more consistently high amplitude. The overlapping means tells us that class‑specific FPCA ellipsoids are needed to a deeper analysis
+This plot summarizes the **average acceleration profile** of each activity and its **variability** over the 5 second window. Sedentary stays essentially flat near zero confirming almost no movement and very low variance. Walking has the highest mean level and widest band, reflecting greater variability despite moderate intensity. Running is slightly lower in mean and variance indicating more consistently high amplitude. The overlapping means tells us that class‑specific FPCA ellipsoids are needed to a deeper analysis.
 
 ```{r FDA_E_6, echo=FALSE}
 par(mfrow = c(1, 3), oma = c(0, 0, 2, 0))
@@ -290,7 +290,7 @@ mtext("Functional Boxplots by Activity", side = 3,
       line = 0, outer = TRUE, font = 2, cex = 1.3)
 ```
 
-These **functional boxplots** summarize the distribution of all 5‑second curves using depth, so the central band represents the most typical trajectory for each activity. Sedentary has an extremely tight box and almost no black outlier curves, confirming very homogeneous idle behaviour after segmentation and purity filtering. Walking and especially Running show thicker boxes and a few clear outliers, corresponding to atypical strides or short transitions that deviate from the dominant pattern. 
+These **functional boxplots** summarize the distribution of all 5 second curves using depth, so the central band represents the most typical trajectory for each activity. Sedentary has an extremely tight box and almost no black outlier curves, confirming very homogeneous idle behaviour after segmentation and purity filtering. Walking and especially Running show thicker boxes and a few clear outliers, corresponding to atypical strides or short transitions that deviate from the dominant pattern. 
 
 
 ### Conformal Prediction
@@ -299,11 +299,11 @@ Now we transition from descriptive statistics into the actual **Conformal Predic
 
 The method in Section 3 allows for the construction of simultaneous prediction bands, providing a **strict statistical guarantee** (controlled by `conf_alpha`) about how likely a classification is correct. These bands effectively create a "channel" or "tube" around our linear accelerometer signal. If a recording stays within this tube, it is confirmed as that specific activity with a  confidence guarantee. However, if the signal falls outside these boundaries, the system can immediately identify it as an anomaly or a transition to a different activity, such as Shopping or Sedentary.
 
-To construct these robust profiles (or **ellipsoidal confidence regions**), the first operation is **Functional PCA (FPCA)**. By projecting our high-frequency data into a lower-dimensional space, we filter out sensor noise and focus on the structural movement patterns. This technique reduces complex 5-second curves into a few **"Principal Components" (PCs)**. Instead of dealing with 50 distinct data points, a curve is now efficiently represented by just 2 or 3 numbers that successfully capture 90% of its overall shape.
+To construct these robust profiles (or **ellipsoidal confidence regions**), the first operation is **Functional PCA (FPCA)**. By projecting our high frequency data into a lower dimensional space, we filter out sensor noise and focus on the structural movement patterns. This technique reduces complex 5 second curves into a few **"Principal Components" (PCs)**. Instead of dealing with 50 distinct data points, a curve is now efficiently represented by just 2 or 3 numbers that successfully capture 90% of its overall shape.
 
-Once the curves are reduced to these core components, we apply the **Mahalanobis Distance**. Unlike a standard Euclidean distance that treats all directions equally, Mahalanobis accounts for how the data is stretched, scaled, or correlated in our multi-dimensional PC space. We use it to calculate a **Conformity Score**, essentially measuring how "weird" or "normal" a curve is relative to its assigned class. This is particularly effective because it correctly shapes our confidence regions into ellipsoids, naturally fitting the actual variance of the subject's movements.
+Once the curves are reduced to these core components, we apply the **Mahalanobis Distance**. Unlike a standard Euclidean distance that treats all directions equally, Mahalanobis accounts for how the data is stretched, scaled, or correlated in our multi dimensional PC space. We use it to calculate a **Conformity Score**, essentially measuring how "weird" or "normal" a curve is relative to its assigned class. This is particularly effective because it correctly shapes our confidence regions into ellipsoids, naturally fitting the actual variance of the subject's movements.
 
-Using these conformity scores, we find a cutoff value such that our target confidence level (e.g., 90%) of our training data falls securely inside the boundary.
+Using these conformity scores, we find a cutoff value such that our target confidence level (e.g. 90%) of our training data falls securely inside the boundary.
 
 With this threshold established, we generate our **prediction bands**. This process converts the abstract PC thresholds back into the physical time domain, visualizing the aforementioned "envelope" or "tube." If a future movement curve stays completely within this tube, it is statistically guaranteed to be consistent with that specific activity.
 
@@ -525,11 +525,11 @@ cat("Coverage results:\n")
 print(coverage_results)
 ```
 
-The **coverage table** shows that all three conformal sets achieve empirical coverage essentially equal to the nominal 90%, confirming that the inductive conformal construction in FPCA score space works as intended for each activity. Sedentary also has a very high Detection_Other (~0.93), meaning almost all non‑sedentary windows fall outside the sedentary ellipsoid, which fits the strong separation seen in the mean/boxplot analyses. Walking and Running, instead, have low Detection_Other (~0.04–0.06), indicating that many non‑walking and non‑running windows still lie inside their ellipsoids; this is consistent with their higher variability and partial overlap in latent space.
+The **coverage table** shows that all three conformal sets achieve empirical coverage essentially equal to the nominal 90%, confirming that the inductive conformal construction in FPCA score space works as intended for each activity. Sedentary also has a very high Detection_Other (~0.93), meaning almost all non sedentary windows fall outside the sedentary ellipsoid, which fits the strong separation seen in the mean/boxplot analyses. Walking and Running, instead, have low Detection_Other (~0.04–0.06), indicating that many non walking and non running windows still lie inside their ellipsoids; this is consistent with their higher variability and partial overlap in latent space.
 
 The **class‑specific FPCA score plots** make this explicit: outliers for Running and Walking sit on the right tail of PC1 but still form a continuum with inliers, while Sedentary outliers are almost all separated in PC1.
 
-Finally, the single **retained harmonic per class** explains >90–99% of variance and has smooth, low frequency shape, confirming that a one‑dimensional Gaussian model in score space is a good approximation and that ellipsoidal conformal sets are a natural choice for these activity‑specific functional signatures.
+Finally, the single **retained harmonic per class** explains >90–99% of variance and has smooth, low frequency shape, confirming that a one dimensional Gaussian model in score space is a good approximation and that ellipsoidal conformal sets are a natural choice for these activity specific functional signatures.
 
 ### Conformal Vis.
 
@@ -541,7 +541,7 @@ While the first plot focuses on the temporal aspect, the **Global Latent Space E
 
 ```{r VIS}
 if (nrow(df_bands_all) == 0) {
-  cat("\n[ERROR] No data was generated for the bands. Please re-run Steps 1-3 to ensure your data is loaded and segmented correctly.\n")
+  cat("\n[ERROR] No data was generated for the bands\n")
 } else {
   
   # Ensure factors for consistent plotting order
@@ -595,13 +595,13 @@ if (nrow(df_bands_all) == 0) {
 
 ```
 
-The **latent‑space** plot shows all 5‑second windows projected onto the first two FPCA components, with separate Gaussian ellipses at 90% level for Sedentary, Walking, and Running. Sedentary points form a short, tight segment near the origin, while Running spreads widely along PC1 and PC2, illustrating why Sedentary is easiest to separate in conformal score space. Walking sits between them, overlapping partially with both, which explains its lower Detection_Other in the coverage table.
+The **latent space** plot shows all 5 second windows projected onto the first two FPCA components, with separate Gaussian ellipses at 90% level for Sedentary, Walking, and Running. Sedentary points form a short, tight segment near the origin, while Running spreads widely along PC1 and PC2, illustrating why Sedentary is easiest to separate in conformal score space. Walking sits between them, overlapping partially with both, which explains its lower Detection_Other in the coverage table.
 
-The **time‑domain conformal bands panel** then shows each class ellipsoid into acceleration space with narrow, low‑amplitude tubes for Sedentary, and progressively higher and wider tubes for Walking and Running. Most projected calibration curves stay inside their respective tubes, visually confirming the ~90% empirical coverage and showing that the FPCA Mahalanobis conformal approach captures both intensity and variability of each activity.
+The **time domain conformal bands panel** then shows each class ellipsoid into acceleration space with narrow, low amplitude tubes for Sedentary, and progressively higher and wider tubes for Walking and Running. Most projected calibration curves stay inside their respective tubes, visually confirming the ~90% empirical coverage and showing that the FPCA Mahalanobis conformal approach captures both intensity and variability of each activity.
 
 
 ### Conclusions
 
 The application of **Conformal Prediction** based on **Functional PCA (FPCA)** and **Mahalanobis distance** provided highly robust results for modeling different movement intensities in our accelerometer data. Extracting just a **single Principal Component** was sufficient to explain nearly all the **variance** for each class: 99.8% for Sedentary, 99.9% for Walking, and 90.9% for Running. Building on this robust dimensionality reduction, when setting a **target confidence level of 90%**, the algorithm's **empirical coverage** on the calibration and test data **hits the nominal target** almost perfectly. We recorded coverages of 90.1% for Sedentary, 90.6% for Walking, and 90.0% for Running. This mathematically demonstrates that the conformal regions, built by calculating the  threshold on the Mahalanobis distances, are **perfectly calibrated**. As a result, the conformal tubes in the time domain enclose exactly the desired proportion of trajectories for each class, ensuring the **distribution-free validity** of the method.
 
-Furthermore, analyzing the curves classified as **anomalies** alongside the **Detection_Other metric**, which measures the percentage of windows from other classes correctly rejected by a given class's ellipsoid, reveals a fundamental **geometric property** of human movement within the latent space. The resting, Sedentary class generates an **extremely tight ellipsoid**. This allows the model to perfectly **isolate micro-movements** and reject almost everything that is not rest, resulting in an exceptionally **high Detection_Other rate of 93.3%**. The 16 outliers found within this class during calibration likely represent slight bumps, posture changes, or sensor jitter. Conversely, Walking and Running activities possess **significantly higher energy and variance**, translating into much **larger ellipsoids** with  values of 5.841 and 6.175, respectively. From a geometric perspective, these high-variance ellipsoids inevitably encompass or **"swallow" very low-variance curves**. Consequently, the conformal bands for Walking and Running naturally contain the Sedentary curves, leading to much **lower true-negative rejection rates**, which is reflected in a Detection_Other of 4.1% for Walking and 6.0% for Running.
+Furthermore, analyzing the curves classified as **anomalies** alongside the **Detection_Other metric**, which measures the percentage of windows from other classes correctly rejected by a given class's ellipsoid, reveals a fundamental **geometric property** of human movement within the latent space. The resting, Sedentary class generates an **extremely tight ellipsoid**. This allows the model to perfectly **isolate micro movements** and reject almost everything that is not rest, resulting in an exceptionally **high Detection_Other rate of 93.3%**. The 16 outliers found within this class during calibration likely represent slight bumps, posture changes, or sensor jitter. Conversely, Walking and Running activities possess **significantly higher energy and variance**, translating into much **larger ellipsoids** with  values of 5.841 and 6.175, respectively. From a geometric perspective, these high variance ellipsoids inevitably encompass or **"swallow" very low variance curves**. Consequently, the conformal bands for Walking and Running naturally contain the Sedentary curves, leading to much **lower true negative rejection rates**, which is reflected in a Detection_Other of 4.1% for Walking and 6.0% for Running.
