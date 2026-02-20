@@ -458,11 +458,14 @@ Instead of dealing with 50 distinct data points, a curve is now
 efficiently represented by just 2 or 3 numbers that successfully capture
 90% of its overall shape.</p>
 <p>Once the curves are reduced to these core components, we apply the
-<strong>Mahalanobis Distance</strong>. This acts as a “smart” distance
-metric that accounts for how the data is stretched or rotated in
-multi-dimensional space. We use it to calculate a <strong>Conformity
-Score</strong> essentially measuring how “weird” or “normal” a curve is
-relative to its assigned class.</p>
+<strong>Mahalanobis Distance</strong>. Unlike a standard Euclidean
+distance that treats all directions equally, Mahalanobis accounts for
+how the data is stretched, scaled, or correlated in our multi
+dimensional PC space. We use it to calculate a <strong>Conformity
+Score</strong>, essentially measuring how “weird” or “normal” a curve is
+relative to its assigned class. This is particularly effective because
+it correctly shapes our confidence regions into ellipsoids, naturally
+fitting the actual variance of the subject’s movements.</p>
 <p>Using these conformity scores, we find a cutoff value such that
 (e.g. 90%) of our training data falls securely inside the boundary.</p>
 <p>With this threshold, we can generate our <strong>prediction
