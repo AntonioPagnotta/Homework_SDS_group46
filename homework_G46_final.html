@@ -839,6 +839,48 @@ respective tubes, visually confirming the ~90% empirical coverage and
 showing that the FPCA Mahalanobis conformal approach captures both
 intensity and variability of each activity.</p>
 </div>
+<div id="conclusions" class="section level3">
+<h3>Conclusions</h3>
+<p>The application of <strong>Conformal Prediction</strong> based on
+<strong>Functional PCA (FPCA)</strong> and <strong>Mahalanobis
+distance</strong> provided highly robust results for modeling different
+movement intensities in our accelerometer data. Extracting just a
+<strong>single Principal Component</strong> was sufficient to explain
+nearly all the <strong>variance</strong> for each class: 99.8% for
+Sedentary, 99.9% for Walking, and 90.9% for Running. Building on this
+robust dimensionality reduction, when setting a <strong>target
+confidence level of 90%</strong>, the algorithm’s <strong>empirical
+coverage</strong> on the calibration and test data <strong>hits the
+nominal target</strong> almost perfectly. We recorded coverages of 90.1%
+for Sedentary, 90.6% for Walking, and 90.0% for Running. This
+mathematically demonstrates that the conformal regions, built by
+calculating the threshold on the Mahalanobis distances, are
+<strong>perfectly calibrated</strong>. As a result, the conformal tubes
+in the time domain enclose exactly the desired proportion of
+trajectories for each class, ensuring the <strong>distribution-free
+validity</strong> of the method.</p>
+<p>Furthermore, analyzing the curves classified as
+<strong>anomalies</strong> alongside the <strong>Detection_Other
+metric</strong>, which measures the percentage of windows from other
+classes correctly rejected by a given class’s ellipsoid, reveals a
+fundamental <strong>geometric property</strong> of human movement within
+the latent space. The resting, Sedentary class generates an
+<strong>extremely tight ellipsoid</strong>. This allows the model to
+perfectly <strong>isolate micro-movements</strong> and reject almost
+everything that is not rest, resulting in an exceptionally <strong>high
+Detection_Other rate of 93.3%</strong>. The 16 outliers found within
+this class during calibration likely represent slight bumps, posture
+changes, or sensor jitter. Conversely, Walking and Running activities
+possess <strong>significantly higher energy and variance</strong>,
+translating into much <strong>larger ellipsoids</strong> with values of
+5.841 and 6.175, respectively. From a geometric perspective, these
+high-variance ellipsoids inevitably encompass or <strong>“swallow” very
+low-variance curves</strong>. Consequently, the conformal bands for
+Walking and Running naturally contain the Sedentary curves, leading to
+much <strong>lower true-negative rejection rates</strong>, which is
+reflected in a Detection_Other of 4.1% for Walking and 6.0% for
+Running.</p>
+</div>
     </section>
   </div>
 </div>
