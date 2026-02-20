@@ -281,7 +281,7 @@ mtext("Functional Boxplots by Activity", side = 3,
       line = 0, outer = TRUE, font = 2, cex = 1.3)
 ```
 
-These **functional boxplots** summarize the distribution of all 5‑second curves using depth, so the central band represents the most typical trajectory for each activity. Sedentary has an extremely tight box and almost no black outlier curves, confirming very homogeneous idle behaviour after segmentation and purity filtering. Walking and especially Running show thicker boxes and a few clear outliers, corresponding to atypical strides or short transitions that deviate from the dominant pattern. These outlying curves are exactly the ones expected to have large Mahalanobis scores in FPCA space and thus to fall outside the conformal ellipsoids in the prediction step.
+These **functional boxplots** summarize the distribution of all 5‑second curves using depth, so the central band represents the most typical trajectory for each activity. Sedentary has an extremely tight box and almost no black outlier curves, confirming very homogeneous idle behaviour after segmentation and purity filtering. Walking and especially Running show thicker boxes and a few clear outliers, corresponding to atypical strides or short transitions that deviate from the dominant pattern. 
 
 
 ### Conformal Prediction
