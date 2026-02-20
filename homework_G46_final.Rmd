@@ -7,6 +7,13 @@ output:
     highlight: github
 ---
 
+### Introduction
+
+Our work presents a comprehensive framework leveraging **Functional Data Analysis (FDA)** and **Conformal Prediction** to objectively classify **human physical activity**—specifically **Sedentary**, **Walking**, and **Running** states—using asynchronous **smartphone sensor telemetry**. To transition from raw, noisy multi-sensor data to a reliable analytical foundation, the pipeline first **synchronizes** all readings onto a **universal 10Hz grid** and isolates the rotation-invariant **linear acceleration magnitude**. Rather than relying on rigid, pre-assigned experimental labels that might ignore human micro-variations, the subject's **true physical state** is dynamically **segmented** using **B-spline smoothing** and **K-Means clustering** applied to a **5-second rolling variance**.
+
+With the data cleanly partitioned and filtered for purity, the analysis shifts to an FDA approach, treating 5-second epochs as **continuous mathematical curves** to extract distinct **biomechanical signatures**. By evaluating **functional means**, **variance**, and the first derivative of acceleration (**Jerk**), we establish a clear **structural understanding** of each movement type. Building upon these functional representations, we subsequently apply a Conformal Prediction framework utilizing **Functional Principal Component Analysis (FPCA)** and **Mahalanobis distances** to establish rigorous, **distribution-free boundaries** for normal behavior. By constructing **90% confidence ellipsoids** in the **latent space** and translating them into **time-domain prediction bands**, the model successfully hits its **empirical coverage targets** across all activities. Ultimately, this geometric evaluation reveals that **low-energy activities** (like resting) generate **tightly constrained regions** capable of perfectly isolating micro-movements and **rejecting over 93% of anomalies**, whereas **higher-energy activities** naturally form **larger, more encompassing ellipsoids** due to their intrinsic **biomechanical variance**.
+
+
 ```{r setup, include=FALSE}
 required_packages <- c("dplyr", "zoo", "fda", "ggplot2", "reshape2", "gridExtra", "prettydoc")
 
@@ -288,17 +295,19 @@ These **functional boxplots** summarize the distribution of all 5‑second curve
 
 ### Conformal Prediction
 
-Now we transition from descriptive statistics into the actual **Conformal Prediction framework** in order to **quantify uncertainty**. The primary goal here is to build a rigorous "profile" (or an **ellipsoidal confidence region**)  for each activity. If a new movement curve falls inside the sedentary profile but outside the running profile, we can confidently classify it. Here we don't guess the activity, but we provide a **strict statistical guarantee** (controlled by `conf_alpha`) about how likely the classification is correct.
+Now we transition from descriptive statistics into the actual **Conformal Prediction framework** to **quantify uncertainty**. Our primary objective is not simply to explore which movements are similar, but to establish a rigorous statistical rule for defining "normal" activity signatures. For this reason, we prioritized the approach described in Section 3 of our reference paper over the purely exploratory clustering (pseudo-densities and clustering trees) found in Section 4.
 
-To construct these robust profiles, the first operation is **Functional PCA (FPCA)**. This technique reduces complex 5 second curves into a few **"Principal Components" (PCs)**. Instead of dealing with 50 distinct data points, a curve is now efficiently represented by just 2 or 3 numbers that successfully capture 90% of its overall shape.
+The method in Section 3 allows for the construction of simultaneous prediction bands, providing a **strict statistical guarantee** (controlled by `conf_alpha`) about how likely a classification is correct. These bands effectively create a "channel" or "tube" around our linear accelerometer signal. If a recording stays within this tube, it is confirmed as that specific activity with a  confidence guarantee. However, if the signal falls outside these boundaries, the system can immediately identify it as an anomaly or a transition to a different activity, such as Shopping or Sedentary.
 
-Once the curves are reduced to these core components, we apply the **Mahalanobis Distance**. Unlike a standard Euclidean distance that treats all directions equally, Mahalanobis accounts for how the data is stretched, scaled, or correlated in our multi dimensional PC space. We use it to calculate a **Conformity Score**, essentially measuring how "weird" or "normal" a curve is relative to its assigned class. This is particularly effective because it correctly shapes our confidence regions into ellipsoids, naturally fitting the actual variance of the subject's movements.
+To construct these robust profiles (or **ellipsoidal confidence regions**), the first operation is **Functional PCA (FPCA)**. By projecting our high-frequency data into a lower-dimensional space, we filter out sensor noise and focus on the structural movement patterns. This technique reduces complex 5-second curves into a few **"Principal Components" (PCs)**. Instead of dealing with 50 distinct data points, a curve is now efficiently represented by just 2 or 3 numbers that successfully capture 90% of its overall shape.
 
-Using these conformity scores, we find a cutoff value such that  (e.g. 90%) of our training data falls securely inside the boundary.
+Once the curves are reduced to these core components, we apply the **Mahalanobis Distance**. Unlike a standard Euclidean distance that treats all directions equally, Mahalanobis accounts for how the data is stretched, scaled, or correlated in our multi-dimensional PC space. We use it to calculate a **Conformity Score**, essentially measuring how "weird" or "normal" a curve is relative to its assigned class. This is particularly effective because it correctly shapes our confidence regions into ellipsoids, naturally fitting the actual variance of the subject's movements.
 
-With this threshold, we can generate our **prediction bands** . This process converts the abstract PC thresholds back into the physical time domain, creating a visual **"envelope" or "tube."** If a future movement curve stays completely within this tube, it is statistically guaranteed to be consistent with that specific activity.
+Using these conformity scores, we find a cutoff value such that our target confidence level (e.g., 90%) of our training data falls securely inside the boundary.
 
-Finally, to ensure our **theoretical guarantees** hold up in practice, we check if 90% of our actual "Walking" data falls within the constructed "Walking" band and verify if "Running" data correctly falls outside that very same "Walking" band.
+With this threshold established, we generate our **prediction bands**. This process converts the abstract PC thresholds back into the physical time domain, visualizing the aforementioned "envelope" or "tube." If a future movement curve stays completely within this tube, it is statistically guaranteed to be consistent with that specific activity.
+
+Finally, to ensure our **theoretical guarantees** hold up in practice, we check if 90% of our actual "Walking" data falls within the constructed "Walking" band, and verify if "Running" data correctly falls outside that very same "Walking" band.
 
 ```{r CP}
 activities <- c("Sedentary", "Walking", "Running")

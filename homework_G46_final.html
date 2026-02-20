@@ -158,6 +158,46 @@ code span.ot { color: #007020; }
 <div id="content-wrapper">
   <div class="inner clearfix">
     <section id="main-content">
+<div id="abstract-introduction" class="section level3">
+<h3>Abstract / Introduction</h3>
+<p>This report presents a comprehensive framework leveraging
+<strong>Functional Data Analysis (FDA)</strong> and <strong>Conformal
+Prediction</strong> to objectively classify <strong>human physical
+activity</strong>—specifically <strong>Sedentary</strong>,
+<strong>Walking</strong>, and <strong>Running</strong> states—using
+asynchronous <strong>smartphone sensor telemetry</strong>. To transition
+from raw, noisy multi-sensor data to a reliable analytical foundation,
+the pipeline first <strong>synchronizes</strong> all readings onto a
+<strong>universal 10Hz grid</strong> and isolates the rotation-invariant
+<strong>linear acceleration magnitude</strong>. Rather than relying on
+rigid, pre-assigned experimental labels that might ignore human
+micro-variations, the subject’s <strong>true physical state</strong> is
+dynamically <strong>segmented</strong> using <strong>B-spline
+smoothing</strong> and <strong>K-Means clustering</strong> applied to a
+<strong>5-second rolling variance</strong>.</p>
+<p>With the data cleanly partitioned and filtered for purity, the
+analysis shifts to an FDA approach, treating 5-second epochs as
+<strong>continuous mathematical curves</strong> to extract distinct
+<strong>biomechanical signatures</strong>. By evaluating
+<strong>functional means</strong>, <strong>variance</strong>, and the
+first derivative of acceleration (<strong>Jerk</strong>), we establish a
+clear <strong>structural understanding</strong> of each movement type.
+Building upon these functional representations, we subsequently apply a
+Conformal Prediction framework utilizing <strong>Functional Principal
+Component Analysis (FPCA)</strong> and <strong>Mahalanobis
+distances</strong> to establish rigorous, <strong>distribution-free
+boundaries</strong> for normal behavior. By constructing <strong>90%
+confidence ellipsoids</strong> in the <strong>latent space</strong> and
+translating them into <strong>time-domain prediction bands</strong>, the
+model successfully hits its <strong>empirical coverage targets</strong>
+across all activities. Ultimately, this geometric evaluation reveals
+that <strong>low-energy activities</strong> (like resting) generate
+<strong>tightly constrained regions</strong> capable of perfectly
+isolating micro-movements and <strong>rejecting over 93% of
+anomalies</strong>, whereas <strong>higher-energy activities</strong>
+naturally form <strong>larger, more encompassing ellipsoids</strong> due
+to their intrinsic <strong>biomechanical variance</strong>.</p>
+</div>
 <div id="data-preprocessing" class="section level3">
 <h3>Data Preprocessing</h3>
 <p>Once obtained the data, first thing we do is transform the
@@ -448,41 +488,53 @@ deviate from the dominant pattern.</p>
 <div id="conformal-prediction" class="section level3">
 <h3>Conformal Prediction</h3>
 <p>Now we transition from descriptive statistics into the actual
-<strong>Conformal Prediction framework</strong> in order to
-<strong>quantify uncertainty</strong>. The primary goal here is to build
-a rigorous “profile” (or an <strong>ellipsoidal confidence
-region</strong>) for each activity. If a new movement curve falls inside
-the sedentary profile but outside the running profile, we can
-confidently classify it. Here we don’t guess the activity, but we
-provide a <strong>strict statistical guarantee</strong> (controlled by
-<code>conf_alpha</code>) about how likely the classification is
-correct.</p>
-<p>To construct these robust profiles, the first operation is
-<strong>Functional PCA (FPCA)</strong>. This technique reduces complex 5
-second curves into a few <strong>“Principal Components” (PCs)</strong>.
-Instead of dealing with 50 distinct data points, a curve is now
-efficiently represented by just 2 or 3 numbers that successfully capture
-90% of its overall shape.</p>
+<strong>Conformal Prediction framework</strong> to <strong>quantify
+uncertainty</strong>. Our primary objective is not simply to explore
+which movements are similar, but to establish a rigorous statistical
+rule for defining “normal” activity signatures. For this reason, we
+prioritized the approach described in Section 3 of our reference paper
+over the purely exploratory clustering (pseudo-densities and clustering
+trees) found in Section 4.</p>
+<p>The method in Section 3 allows for the construction of simultaneous
+prediction bands, providing a <strong>strict statistical
+guarantee</strong> (controlled by <code>conf_alpha</code>) about how
+likely a classification is correct. These bands effectively create a
+“channel” or “tube” around our linear accelerometer signal. If a
+recording stays within this tube, it is confirmed as that specific
+activity with a confidence guarantee. However, if the signal falls
+outside these boundaries, the system can immediately identify it as an
+anomaly or a transition to a different activity, such as Shopping or
+Sedentary.</p>
+<p>To construct these robust profiles (or <strong>ellipsoidal confidence
+regions</strong>), the first operation is <strong>Functional PCA
+(FPCA)</strong>. By projecting our high-frequency data into a
+lower-dimensional space, we filter out sensor noise and focus on the
+structural movement patterns. This technique reduces complex 5-second
+curves into a few <strong>“Principal Components” (PCs)</strong>. Instead
+of dealing with 50 distinct data points, a curve is now efficiently
+represented by just 2 or 3 numbers that successfully capture 90% of its
+overall shape.</p>
 <p>Once the curves are reduced to these core components, we apply the
 <strong>Mahalanobis Distance</strong>. Unlike a standard Euclidean
 distance that treats all directions equally, Mahalanobis accounts for
-how the data is stretched, scaled, or correlated in our multi
-dimensional PC space. We use it to calculate a <strong>Conformity
+how the data is stretched, scaled, or correlated in our
+multi-dimensional PC space. We use it to calculate a <strong>Conformity
 Score</strong>, essentially measuring how “weird” or “normal” a curve is
 relative to its assigned class. This is particularly effective because
 it correctly shapes our confidence regions into ellipsoids, naturally
 fitting the actual variance of the subject’s movements.</p>
-<p>Using these conformity scores, we find a cutoff value such that
-(e.g. 90%) of our training data falls securely inside the boundary.</p>
-<p>With this threshold, we can generate our <strong>prediction
-bands</strong> . This process converts the abstract PC thresholds back
-into the physical time domain, creating a visual <strong>“envelope” or
-“tube.”</strong> If a future movement curve stays completely within this
-tube, it is statistically guaranteed to be consistent with that specific
+<p>Using these conformity scores, we find a cutoff value such that our
+target confidence level (e.g., 90%) of our training data falls securely
+inside the boundary.</p>
+<p>With this threshold established, we generate our <strong>prediction
+bands</strong>. This process converts the abstract PC thresholds back
+into the physical time domain, visualizing the aforementioned “envelope”
+or “tube.” If a future movement curve stays completely within this tube,
+it is statistically guaranteed to be consistent with that specific
 activity.</p>
 <p>Finally, to ensure our <strong>theoretical guarantees</strong> hold
 up in practice, we check if 90% of our actual “Walking” data falls
-within the constructed “Walking” band and verify if “Running” data
+within the constructed “Walking” band, and verify if “Running” data
 correctly falls outside that very same “Walking” band.</p>
 <div class="sourceCode" id="cb6"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" tabindex="-1"></a>activities <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="st">&quot;Sedentary&quot;</span>, <span class="st">&quot;Walking&quot;</span>, <span class="st">&quot;Running&quot;</span>)</span>
 <span id="cb6-2"><a href="#cb6-2" tabindex="-1"></a>conf_alpha <span class="ot">&lt;-</span> <span class="fl">0.10</span></span>
