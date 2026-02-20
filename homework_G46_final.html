@@ -245,6 +245,12 @@ hidden inside the data. This means if the subject stopped for 10 seconds
 during the planned “Running” phase, K-Means <strong>organically
 detected</strong> the drop in variance and correctly reassigned those
 specific seconds to “Sedentary.”</p>
+<p>Crucially, because this K-Means pre-segmentation successfully divides
+our data into distinct, homogeneous classes, the resulting distribution
+of each class’s features is intrinsically unimodal. This strategic step
+makes the subsequent application of a Gaussian Mixture Model (GMM)
+computationally redundant, streamlining our pipeline without sacrificing
+any statistical rigor.</p>
 <p>Finally, as a last quality-control step, we applied <strong>Label
 Filtering</strong>. We ran a <strong>median filter</strong> over the
 K-Means output labels to iron out <strong>physical
